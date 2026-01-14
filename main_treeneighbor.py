@@ -23,16 +23,22 @@ from helpers import get_cayley_n, cayley_graph_size, get_cayley_graph
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-NUM_EPOCHS = 2
+NUM_EPOCHS = 800
 LR = 0.001
-BATCH_SIZE = 20
+BATCH_SIZE = 512
 NUM_ITER = 1
+WEIGHT_DECAY = 5e-4
+EARLY_STOP_PATIENCE = 100
+SCHEDULER_MODE = 'max'
+SCHEDULER_THRESHOLD_MODE = 'abs'
+SCHEDULER_FACTOR = 0.5
+SCHEDULER_PATIENCE = 10
 
-NUM_LAYERS = 4
-HIDDEN_DIM = 4
+NUM_LAYERS = 8
+HIDDEN_DIM = 128
 DROPOUT = 0.0
 
-DEPTH = 4
+DEPTH = 5
 TRAIN_FRACTION = 0.8
 VAL_FRACTION = 0.1
 
@@ -319,9 +325,8 @@ class TreeGNNNode(nn.Module):
 
         base_edge_index = batched_data.edge_index
         for layer in range(self.num_layer):
-            base_modes = ['egp','cgp']
-            alt_even_modes = ['p-egp','p-cgp','rand','p-rand']
-            use_alt = (self.mode in base_modes and (layer % 2 == 1)) or (self.mode in alt_even_modes and (layer % 2 == 0))
+            base_modes = ['egp','cgp', 'p-egp','p-cgp','rand','p-rand']
+            use_alt = (self.mode in base_modes and (layer % 2 == 1))
             if use_alt:
                 alt_edge_index = self._compute_alt_edge_index(batched_data)
                 h = self.convs[layer](h_list[layer], alt_edge_index)
@@ -377,11 +382,20 @@ def run_experiment(model: nn.Module,
                    train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader,
                    criterion,
                    transform_name: str | None = None):
-    optimiser = torch.optim.Adam(model.parameters(), lr=LR)
+    optimiser = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimiser,
+        mode=SCHEDULER_MODE,
+        factor=SCHEDULER_FACTOR,
+        patience=SCHEDULER_PATIENCE,
+        threshold_mode=SCHEDULER_THRESHOLD_MODE
+    )
 
     train_curve = []
     validation_curve = []
     test_curve = []
+    best_val = -float('inf')
+    patience_count = 0
 
     transform_obj = None
     tname = (transform_name or 'base').upper()
@@ -406,6 +420,18 @@ def run_experiment(model: nn.Module,
         test_curve.append(test_acc)
 
         print(f'Train acc: {train_acc:.4f}, validation Acc: {validation_acc:.4f}, test Acc: {test_acc:.4f}\n')
+
+        scheduler.step(validation_acc)
+
+        #Early stopping on validation accuracy
+        if validation_acc > best_val:
+            best_val = validation_acc
+            patience_count = 0
+        else:
+            patience_count += 1
+        if patience_count >= EARLY_STOP_PATIENCE:
+            print(f'Early stopping at epoch {epoch} (no improvement for {EARLY_STOP_PATIENCE} epochs)')
+            break
     best_validation_epoch = int(np.argmax(np.array(validation_curve)))
     print('Finished training')
     print(f'Best validation score: {validation_curve[best_validation_epoch]:.4f}')
@@ -414,7 +440,7 @@ def run_experiment(model: nn.Module,
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Tree-NeighborsMatch synthetic benchmark")
-    parser.add_argument('--seeds', type=str, default='1,11', help='Comma-seprated list of RNG seeds')
+    parser.add_argument('--seeds', type=str, default='1,11,21,31,41', help='Comma-seprated list of RNG seeds')
     parser.add_argument('--depth', type=int, default=DEPTH, help='Tree depth for dataset generation')
     return parser.parse_args()
 
@@ -468,14 +494,14 @@ def main():
         p_egp_scores.append(p_egp_score/ max(1, NUM_ITER))
 
         rand_model = TreeGNN(transform_name='rand', is_cgp=False, out_dim=OUTPUT_DIM).to(DEVICE)
-        print('Experiments for rand(random regular per even layer)')
+        print('Experiments for rand(random regular per odd layer)')
         rand_score = 0.0
         for _ in range(NUM_ITER):
             rand_score += run_experiment(rand_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, criterion, transform_name='base')
         rand_scores.append(rand_score/ max(1, NUM_ITER))
 
         p_rand_model = TreeGNN(transform_name='p-rand', is_cgp=False, out_dim=OUTPUT_DIM).to(DEVICE)
-        print('Experiments for p-rand( per-epoch random base, permuted per even layer)')
+        print('Experiments for p-rand( per-epoch random base, permuted per odd layer)')
         p_rand_score = 0.0
         for _ in range(NUM_ITER):
             p_rand_score += run_experiment(p_rand_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, criterion, transform_name='base')

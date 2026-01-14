@@ -20,28 +20,31 @@ from helpers import get_cayley_n, cayley_graph_size, get_cayley_graph
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 #Hyperparameters
-NUM_EPOCHS = 2
+NUM_EPOCHS = 100
 LR = 0.001
-BATCH_SIZE = 20
+BATCH_SIZE = 32
 NUM_ITER = 1
 
 #Model hyperparameters
-NUM_LAYERS = 4
-HIDDEN_DIM = 4
-DROPOUT = 0.5
+NUM_LAYERS = 6
+HIDDEN_DIM = 256
+DROPOUT = 0.2
 
 DEGREE_D = int(os.getenv('DEGREE_D', '4'))
 
 DATASET_NAME = 'PCQM-Contact'
 DATA_ROOT = os.path.join(CUR_DIR, 'datasets', 'pcqm-contact')
 
-MAX_TRAIN_GRAPHS = 200
-MAX_VAL_GRAPHS = 100
-MAX_TEST_GRAPHS = 100
+MAX_TRAIN_GRAPHS = None
+MAX_VAL_GRAPHS = None
+MAX_TEST_GRAPHS = None
 
 INPUT_DIM =  None
 
-HITS_K = 2
+HITS_K = 20
+#Early stopping
+ES_PATIENCE = 20
+ES_MIN_DELTA = 1e-4
 
 def _cap_list(lst, cap):
     if cap is None:
@@ -57,9 +60,9 @@ def get_loaders(root: str, name: str, batch_size: int = BATCH_SIZE):
     val_list = _cap_list(list(val_ds), MAX_VAL_GRAPHS)
     test_list = _cap_list(list(test_ds), MAX_TEST_GRAPHS)
 
-    train_loader = DataLoader(train_list, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_list, batch_size=batch_size)
-    test_loader = DataLoader(test_list, batch_size=batch_size)
+    train_loader = DataLoader(train_list, batch_size=batch_size, shuffle=True, num_workers = 4, pin_memory = True)
+    val_loader = DataLoader(val_list, batch_size=batch_size, num_workers = 4, pin_memory = True)
+    test_loader = DataLoader(test_list, batch_size=batch_size, num_workers = 4, pin_memory = True)
     return train_list, val_list, test_list, train_loader, val_loader, test_loader, train_ds
 
 class PCQMExpanderTransform:
@@ -323,9 +326,8 @@ class PCQMContactGNNNode(nn.Module):
             h_list = [x.float()]
 
         for layer in range(self.num_layers):
-            base_modes = ['egp','cgp']
-            alt_even_modes = ['p-egp','p-cgp','rand','p-rand']
-            use_alt = (self.mode in base_modes and (layer % 2 == 1)) or (self.mode in alt_even_modes and (layer % 2 == 0))
+            base_modes = ['egp','cgp', 'p-egp','p-cgp','rand','p-rand']
+            use_alt = (self.mode in base_modes and (layer % 2 == 1))
             if use_alt:
                 alt_edge_index = self._compute_alt_edge_index(batched_data)
                 h = self.convs[layer](h_list[layer], alt_edge_index)
@@ -430,6 +432,7 @@ def run_experiment(model: nn.Module, train_list: list[Data], val_list: list[Data
                    transform_name: str | None = None):
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     loss_fn = nn.BCEWithLogitsLoss()
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=10, threshold=1e-4, min_lr=1e-5, verbose=True)
 
     val_mrr_curve = []
     val_hits_curve = []
@@ -444,6 +447,9 @@ def run_experiment(model: nn.Module, train_list: list[Data], val_list: list[Data
         transform_obj.apply_to_dataset(val_list)
         transform_obj.apply_to_dataset(test_list)
     print('Start training...')
+    best_val_mrr = -float('inf')
+    best_epoch = 0
+    es_counter = 0
     for epoch in range(1, NUM_EPOCHS + 1):
         print(f'Epoch {epoch}:')
         if hasattr(model, 'gnn_node') and hasattr(model.gnn_node, 'begin_epoch'):
@@ -452,6 +458,7 @@ def run_experiment(model: nn.Module, train_list: list[Data], val_list: list[Data
         train(model, train_loader, optimizer=optimizer, loss_fn=loss_fn)
         val_hits, val_mrr = evaluate_link_metrics(model, val_loader, k=HITS_K)
         test_hits, test_mrr = evaluate_link_metrics(model, test_loader, k=HITS_K)
+        scheduler.step(val_mrr)
 
         val_mrr_curve.append(val_mrr)
         val_hits_curve.append(val_hits)
@@ -459,6 +466,14 @@ def run_experiment(model: nn.Module, train_list: list[Data], val_list: list[Data
         test_hits_curve.append(test_hits)
 
         print(f'Val MRR: {val_mrr:.4f}, Val Hits@{HITS_K}: {val_hits:.4f} | Test MRR: {test_mrr:.4f}, Test Hits@{HITS_K}: {test_hits:.4f}\n')
+        if (val_mrr - best_val_mrr) > ES_MIN_DELTA:
+            best_val_mrr = val_mrr
+            es_counter = 0
+        else:
+            es_counter += 1
+            if es_counter >= ES_PATIENCE:
+                print(f'Early stoppping at epoch {epoch}(no improvement for {es_counter} epochs)')
+                break
     best_validation_epoch = int(np.argmax(np.array(val_mrr_curve)))
 
     print('Finished Training!')
@@ -470,7 +485,7 @@ def run_experiment(model: nn.Module, train_list: list[Data], val_list: list[Data
 
 def main():
     global INPUT_DIM
-    SEEDS = [1, 11]
+    SEEDS = [1, 11, 21, 31, 41]
     train_list, val_list, test_list, base_train_loader, base_val_loader, base_test_loader, train_ds = get_loaders(root=DATA_ROOT, name=DATASET_NAME, batch_size=BATCH_SIZE)
     INPUT_DIM = int(train_ds.num_node_features)
 
@@ -506,7 +521,7 @@ def main():
             torch.manual_seed(seed)
             np.random.seed(seed)
 
-            train_loader = DataLoader(train_list, batch_size=BATCH_SIZE, shuffle=True, generator = torch.Generator().manual_seed(seed))
+            train_loader = DataLoader(train_list, batch_size=BATCH_SIZE, shuffle=True, generator = torch.Generator().manual_seed(seed), num_workers = 4, pin_memory = True)
             val_loader = base_val_loader
             test_loader = base_test_loader
 

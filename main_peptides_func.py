@@ -6,6 +6,8 @@ import torch.nn.functional as F
 import numpy as np
 import networkx as nx
 from tqdm import tqdm
+import argparse
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from torch_geometric.datasets import LRGBDataset
 from torch_geometric.data import Data
@@ -22,15 +24,24 @@ from helpers import get_cayley_n, cayley_graph_size, get_cayley_graph
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 #HYPERPARAMETERS
-NUM_EPOCHS = 2
+NUM_EPOCHS = 500
 LR = 0.001
-BATCH_SIZE = 12
+BATCH_SIZE = 128
 NUM_ITER = 1
 
 #MODEL HYPERPARAMS
-NUM_LAYERS = 4
-HIDDEN_DIM = 4
-DROPOUT = 0.0
+NUM_LAYERS = 6
+HIDDEN_DIM = 64
+DROPOUT = 0.5
+
+#Scheduler hyperparams
+REDUCE_FACTOR = 0.5
+PATIENCE = 20
+MIN_LR = 1e-5
+
+#Early stopping hyperparams
+ES_PATIENCE = 50
+ES_MIN_DELTA = 1e-4
 
 DEGREE_D =  int(os.getenv('DEGREE_D','4'))
 DATASET_NAME = 'peptides-func'
@@ -260,9 +271,8 @@ class PeptidesGNNNode(nn.Module):
         else:
             h_list = [x.float()]
         for layer in range(self.num_layer):
-            base_modes = ['egp','cgp']
-            alt_even_modes = ['p-egp','p-cgp','rand','p-rand']
-            use_alt = (self.mode in base_modes and (layer % 2 == 1)) or (self.mode in alt_even_modes and (layer % 2 == 0))
+            base_modes = ['egp','cgp', 'p-egp','p-cgp','rand','p-rand']
+            use_alt = (self.mode in base_modes and (layer % 2 == 1))
             if use_alt:
                 alt_edge_index = self._compute_alt_edge_index(batched_data)
                 h = self.convs[layer](h_list[layer], alt_edge_index)
@@ -353,10 +363,13 @@ def run_experiment(model: nn.Module,
                    transform_name: str | None = None):
     optimiser = torch.optim.Adam(model.parameters(), lr=LR)
     loss_fn = nn.BCEWithLogitsLoss()
-
+    scheduler = ReduceLROnPlateau(optimiser, mode='max', factor=REDUCE_FACTOR, patience=PATIENCE, min_lr=MIN_LR, verbose=False)
     train_curve = []
     validation_curve = []
     test_curve = []
+    best_val = -float('inf')
+    best_test_at_best_val = None
+    epochs_no_improve = 0
 
     tname = (transform_name or 'base').upper()
     if tname in ('CGP', 'P-CGP', 'PCGP'):
@@ -373,6 +386,7 @@ def run_experiment(model: nn.Module,
 
         train_ap = eval_ap(model, train_loader)
         validation_ap = eval_ap(model, val_loader)
+        scheduler.step(validation_ap)
         test_ap = eval_ap(model, test_loader)
 
         train_curve.append(train_ap)
@@ -380,6 +394,15 @@ def run_experiment(model: nn.Module,
         test_curve.append(test_ap)
 
         print(f'Train AP: {train_ap:.4f}, validation AP: {validation_ap:.4f}, test AP: {test_ap:.4f}\n')
+        #Early stopping check(on validation AP)
+        if validation_ap > best_val + ES_MIN_DELTA:
+            best_val = validation_ap
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+            if ES_PATIENCE > 0 and epochs_no_improve >= ES_PATIENCE:
+                print(f'Early stopping triggered at epoch {epoch}(no improvement for {epochs_no_improve} epochs)')
+                break
     best_validation_epoch = int(np.argmax(np.array(validation_curve)))
     print('Finished training')
     print(f'Best validation score: {validation_curve[best_validation_epoch]:.4f}')
@@ -425,11 +448,11 @@ def main():
         results['p-egp'].append(run_experiment(p_egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='P-EGP'))
 
         rand_model = PeptidesGNN(transform_name='rand', is_cgp=False).to(DEVICE)
-        print('Experiments for rand (random regular per even layer)')
+        print('Experiments for rand (random regular per odd layer)')
         results['rand'].append(run_experiment(rand_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='base'))
 
         p_rand_model = PeptidesGNN(transform_name='p-rand', is_cgp=False).to(DEVICE)
-        print('Experiments for p-rand(per-epoch random base, permuted per even layer)')
+        print('Experiments for p-rand(per-epoch random base, permuted per odd layer)')
         results['p-rand'].append(run_experiment(p_rand_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='base'))
 
         cgp_model = PeptidesGNN(transform_name='CGP', is_cgp=True).to(DEVICE)
@@ -441,7 +464,11 @@ def main():
         results['p-cgp'].append(run_experiment(p_cgp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='P-CGP'))
 
 
-    print(f'''\nHyper parameters for this test\n#Training parameters\nNUM_EPOCHS = {NUM_EPOCHS}\nLR = {LR}\nBATCH_SIZE = {BATCH_SIZE}\nSEEDS = {SEEDS}\n\n# GNN\nNUM_LAYERS = {NUM_LAYERS}\nHIDDEN_DIM={HIDDEN_DIM}\nDROPOUT = {DROPOUT}\nDEGREE_D = {DEGREE_D}''')
+    print(f'''\nHyper parameters for this test\n#Training parameters\nNUM_EPOCHS = {NUM_EPOCHS}\nLR = {LR}\nBATCH_SIZE = {BATCH_SIZE}\nSEEDS = {SEEDS}\n\n#Scheduler: ReduceLRonPlateau\nREDUCE_FACTOR:{REDUCE_FACTOR}\nPATIENCE={PATIENCE}\nMIN_LR={MIN_LR} \n
+          #Early stopping
+          ES_PATIENCE={ES_PATIENCE}
+          ES_MIN_DELTA = {ES_MIN_DELTA}
+          \n# GNN\nNUM_LAYERS = {NUM_LAYERS}\nHIDDEN_DIM={HIDDEN_DIM}\nDROPOUT = {DROPOUT}\nDEGREE_D = {DEGREE_D}''')
 
     print('Final Test AP (mean ± sd over seeds):')
     for key in ['base','egp','p-egp','rand','p-rand','cgp','p-cgp']:

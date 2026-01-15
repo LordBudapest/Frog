@@ -7,6 +7,7 @@ import numpy as np
 import networkx as nx
 from tqdm import tqdm
 import argparse
+import json
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from torch_geometric.datasets import LRGBDataset
@@ -22,6 +23,8 @@ if CUR_DIR not in sys.path:
 from helpers import get_cayley_n, cayley_graph_size, get_cayley_graph
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+RESULTS_DIR = 'results'
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
 #HYPERPARAMETERS
 NUM_EPOCHS = 500
@@ -437,31 +440,94 @@ def main():
 
         base_model = PeptidesGNN(transform_name='base', is_cgp=False).to(DEVICE)
         print('Experiments for the base graph (no expanders)')
-        results['base'].append(run_experiment(base_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='base'))
+        test_ap = run_experiment(base_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='base')
+        results['base'].append(test_ap)
+        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
+        with open(results_file, 'a') as f:
+            f.write(json.dumps({
+                'dataset': 'peptides-func',
+                'mode': 'base',
+                'seed': int(seed),
+                'ap': float(test_ap)
+            }) + '\n')
 
         egp_model = PeptidesGNN(transform_name='EGP', is_cgp=False).to(DEVICE)
         print('Experiments for egp')
-        results['egp'].append(run_experiment(egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='EGP'))
+        test_ap = (run_experiment(egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='EGP'))
+        results['egp'].append(test_ap)
+        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
+        with open(results_file, 'a') as f:
+            f.write(json.dumps({
+                'dataset': 'peptides-func',
+                'mode': 'egp',
+                'seed': int(seed),
+                'ap': float(test_ap)
+            }) + '\n')
 
         p_egp_model = PeptidesGNN(transform_name='P-EGP', is_cgp=False).to(DEVICE)
         print('Experiments for p-egp')
-        results['p-egp'].append(run_experiment(p_egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='P-EGP'))
+        test_ap = (run_experiment(p_egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='P-EGP'))
+        results['p-egp'].append(test_ap)
+        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
+        with open(results_file, 'a') as f:
+            f.write(json.dumps({
+                'dataset': 'peptides-func',
+                'mode': 'p-egp',
+                'seed': int(seed),
+                'ap': float(test_ap)
+            }) + '\n')
 
         rand_model = PeptidesGNN(transform_name='rand', is_cgp=False).to(DEVICE)
         print('Experiments for rand (random regular per odd layer)')
-        results['rand'].append(run_experiment(rand_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='base'))
+        test_ap = (run_experiment(rand_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='base'))
+        results['rand'].append(test_ap)
+        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
+        with open(results_file, 'a') as f:
+            f.write(json.dumps({
+                'dataset': 'peptides-func',
+                'mode': 'rand',
+                'seed': int(seed),
+                'ap': float(test_ap)
+            }) + '\n')
 
         p_rand_model = PeptidesGNN(transform_name='p-rand', is_cgp=False).to(DEVICE)
         print('Experiments for p-rand(per-epoch random base, permuted per odd layer)')
-        results['p-rand'].append(run_experiment(p_rand_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='base'))
+        test_ap = (run_experiment(p_rand_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='base'))
+        results['p-rand'].append(test_ap)
+        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
+        with open(results_file, 'a') as f:
+            f.write(json.dumps({
+                'dataset': 'peptides-func',
+                'mode': 'p-rand',
+                'seed': int(seed),
+                'ap': float(test_ap)
+            }) + '\n')
 
         cgp_model = PeptidesGNN(transform_name='CGP', is_cgp=True).to(DEVICE)
         print('Experiments for cgp')
-        results['cgp'].append(run_experiment(cgp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='CGP'))
+        test_ap = (run_experiment(cgp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='CGP'))
+        results['cgp'].append(test_ap)
+        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
+        with open(results_file, 'a') as f:
+            f.write(json.dumps({
+                'dataset': 'peptides-func',
+                'mode': 'cgp',
+                'seed': int(seed),
+                'ap': float(test_ap)
+            }) + '\n')
 
         p_cgp_model = PeptidesGNN(transform_name='P-CGP', is_cgp=True).to(DEVICE)
         print('Experiments for p-cgp')
-        results['p-cgp'].append(run_experiment(p_cgp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='P-CGP'))
+        test_ap = (run_experiment(p_cgp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='P-CGP'))
+        results['p-cgp'].append(test_ap)
+        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
+        with open(results_file, 'a') as f:
+            f.write(json.dumps({
+                'dataset': 'peptides-func',
+                'mode': 'p-cgp',
+                'seed': int(seed),
+                'ap': float(test_ap)
+            }) + '\n')
 
 
     print(f'''\nHyper parameters for this test\n#Training parameters\nNUM_EPOCHS = {NUM_EPOCHS}\nLR = {LR}\nBATCH_SIZE = {BATCH_SIZE}\nSEEDS = {SEEDS}\n\n#Scheduler: ReduceLRonPlateau\nREDUCE_FACTOR:{REDUCE_FACTOR}\nPATIENCE={PATIENCE}\nMIN_LR={MIN_LR} \n

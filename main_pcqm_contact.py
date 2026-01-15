@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm
 import networkx as nx
+import json
 
 from torch_geometric.datasets import LRGBDataset
 from torch_geometric.data import Data
@@ -18,6 +19,8 @@ if CUR_DIR not in sys.path:
 from helpers import get_cayley_n, cayley_graph_size, get_cayley_graph
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+RESULTS_DIR = 'results'
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
 #Hyperparameters
 NUM_EPOCHS = 100
@@ -529,6 +532,16 @@ def main():
             hits, mrr = run_experiment(model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name=tname)
             hits_list.append(hits)
             mrr_list.append(mrr)
+            results_file = os.path.join(RESULTS_DIR, f'pcqm_contact_seed{seed}.jsonl')
+            with open(results_file, 'a') as f:
+                f.write(json.dumps({
+                    'dataset': 'PCQM-Contact',
+                    'mode': key,
+                    'seed': int(seed),
+                    'k': int(HITS_K),
+                    'hits_at_k': float(hits),
+                    'mrr': float(mrr)
+                }) + '\n')
         results[key] = list(zip(hits_list, mrr_list))
 
     print(f'''\n Hyper parameters for this test\n#Training parameters\nNUM_EPOCHS = {NUM_EPOCHS}\nLR={LR}\nBATCH_SIZE = {BATCH_SIZE}\nSEEDS={SEEDS}\n\n#GNN\nNUM_LAYERS={NUM_LAYERS}\nHIDDEN_DIM = {HIDDEN_DIM}\n DROPOUT = {DROPOUT}\n#Evaluation\nHITS_K = {HITS_K} (best epoch selected by validation MRR) ''')

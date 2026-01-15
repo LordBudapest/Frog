@@ -1,6 +1,7 @@
 import os
 import sys
 import math
+import random
 import argparse
 import torch
 import torch.nn as nn
@@ -23,19 +24,19 @@ from helpers import get_cayley_n, cayley_graph_size, get_cayley_graph
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-NUM_EPOCHS = 800
+NUM_EPOCHS = 400
 LR = 0.001
-BATCH_SIZE = 512
+BATCH_SIZE = 4096
 NUM_ITER = 1
 WEIGHT_DECAY = 5e-4
-EARLY_STOP_PATIENCE = 100
+EARLY_STOP_PATIENCE = 50
 SCHEDULER_MODE = 'max'
 SCHEDULER_THRESHOLD_MODE = 'abs'
 SCHEDULER_FACTOR = 0.5
 SCHEDULER_PATIENCE = 10
 
 NUM_LAYERS = 8
-HIDDEN_DIM = 128
+HIDDEN_DIM = 64
 DROPOUT = 0.0
 
 DEPTH = 5
@@ -120,7 +121,7 @@ class TreeExpanderTransform:
         for data in dataset_list:
             self.apply_to_data(data)
 
-def get_loaders(depth: int, train_fraction: float, batch_size: int = BATCH_SIZE, val_fraction: float = VAL_FRACTION):
+def get_loaders(depth: int, train_fraction: float, batch_size: int = BATCH_SIZE, val_fraction: float = VAL_FRACTION, seed: int = 42):
     '''
     Generate train/val/test loaders from bottleneck-main synthetic dataset.
     Returns both lists and loaders for transform application per epoch
@@ -129,16 +130,22 @@ def get_loaders(depth: int, train_fraction: float, batch_size: int = BATCH_SIZE,
 
     val_size = max(1, int(len(X_train) * val_fraction))
     train_size = max(0, len(X_train) - val_size)
-    generator = torch.Generator().manual_seed(42)
+    generator = torch.Generator().manual_seed(seed)
     X_train_split, X_val_split = torch.utils.data.random_split(X_train, [train_size, val_size], generator=generator)
 
     train_list = list(X_train_split)
     val_list = list(X_val_split)
     test_list = list(X_test)
+    num_workers = max(0, min(os.cpu_count() or 0, 8))
+    pin_memory = (DEVICE.type == 'cuda')
+    persistent_workers = (num_workers > 0)
 
-    train_loader = DataLoader(train_list, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_list, batch_size=batch_size)
-    test_loader = DataLoader(test_list, batch_size=batch_size)
+    train_loader = DataLoader(train_list, batch_size=batch_size, shuffle=True,
+                              num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers)
+    val_loader = DataLoader(val_list, batch_size=batch_size,
+                            num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers)
+    test_loader = DataLoader(test_list, batch_size=batch_size,
+                             num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers)
 
     return (train_list, val_list, test_list, train_loader, val_loader, test_loader, dim0, out_dim, criterion)
 
@@ -442,12 +449,18 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Tree-NeighborsMatch synthetic benchmark")
     parser.add_argument('--seeds', type=str, default='1,11,21,31,41', help='Comma-seprated list of RNG seeds')
     parser.add_argument('--depth', type=int, default=DEPTH, help='Tree depth for dataset generation')
+    parser.add_argument('--hidden_dim', type=int, default=HIDDEN_DIM, help='Hidden dimension')
+    parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of GNN layers')
+    parser.add_argument('--batch_size', type=int, default=BATCH_SIZE, help='batch size for the dataloader')
     return parser.parse_args()
 
 def main():
-    global INPUT_DIM, OUTPUT_DIM
+    global INPUT_DIM, OUTPUT_DIM, NUM_LAYERS, HIDDEN_DIM, BATCH_SIZE
     args = parse_args()
     depth = int(args.depth)
+    NUM_LAYERS = int(args.num_layers)
+    HIDDEN_DIM = int(args.hidden_dim)
+    BATCH_SIZE = int(args.batch_size)
     seeds = [int(s.strip()) for s in args.seeds.split(',') if s.strip()]
 
     print('Tree-NeighborsMatch (synthetic benchmark): Accuracy( higher is better)')
@@ -464,8 +477,9 @@ def main():
     for seed in seeds:
         torch.manual_seed(seed)
         np.random.seed(seed)
+        random.seed(seed)
         train_list, val_list, test_list, train_loader, val_loader, test_loader, dim0, out_dim, criterion = get_loaders(
-            depth, TRAIN_FRACTION, batch_size=BATCH_SIZE
+            depth, TRAIN_FRACTION, batch_size=BATCH_SIZE, val_fraction=VAL_FRACTION, seed=seed
         )
         INPUT_DIM = int(dim0)
         OUTPUT_DIM = int(out_dim)

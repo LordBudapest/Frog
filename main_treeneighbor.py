@@ -138,7 +138,7 @@ def get_loaders(depth: int, train_fraction: float, batch_size: int = BATCH_SIZE,
     train_list = list(X_train_split)
     val_list = list(X_val_split)
     test_list = list(X_test)
-    num_workers = 4 if torch.cuda.is_available() else 0
+    num_workers = 8 if torch.cuda.is_available() else 0
     pin_memory = (DEVICE.type == 'cuda')
     persistent_workers = (num_workers > 0)
 

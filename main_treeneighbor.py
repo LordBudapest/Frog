@@ -36,7 +36,7 @@ SCHEDULER_FACTOR = 0.5
 SCHEDULER_PATIENCE = 10
 
 NUM_LAYERS = 8
-HIDDEN_DIM = 64
+HIDDEN_DIM = 128
 DROPOUT = 0.0
 
 DEPTH = 5
@@ -136,7 +136,7 @@ def get_loaders(depth: int, train_fraction: float, batch_size: int = BATCH_SIZE,
     train_list = list(X_train_split)
     val_list = list(X_val_split)
     test_list = list(X_test)
-    num_workers = max(0, min(os.cpu_count() or 0, 8))
+    num_workers = 4 if torch.cuda.is_available() else 0
     pin_memory = (DEVICE.type == 'cuda')
     persistent_workers = (num_workers > 0)
 

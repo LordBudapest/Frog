@@ -549,6 +549,28 @@ def main():
     rand_mean, rand_std = mean_std(rand_scores)
     p_rand_mean, p_rand_std = mean_std(p_rand_scores)
 
+    print(f'''
+    Hyper parameters for this test are:
+    NUM_EPOCHS = {NUM_EPOCHS}
+    LR = {LR}
+    BATCH_SIZE = {BATCH_SIZE}
+    NUM_ITER = {NUM_ITER}
+    WEIGHT_DECAY = {WEIGHT_DECAY}
+    EARLY_STOP_PATIENCE = {EARLY_STOP_PATIENCE}
+    SCHEDULER_MODE = {SCHEDULER_MODE}
+    SCHEDULER_THRESHOLD_MODE = {SCHEDULER_THRESHOLD_MODE}
+    SCHEDULER_FACTOR = {SCHEDULER_FACTOR}
+    SCHEDULER_PATIENCE = {SCHEDULER_PATIENCE}
+
+    NUM_LAYERS = {NUM_LAYERS}
+    HIDDEN_DIM = {HIDDEN_DIM}
+    DROPOUT = {DROPOUT}
+
+    DEPTH = {DEPTH}
+    TRAIN_FRACTION = {TRAIN_FRACTION}
+    VAL_FRACTION = {VAL_FRACTION}
+    ''')
+
     print("\nFinal aggregated scores:")
     print(f'base graph (no expander): {base_mean:.4f} ± {base_std:.4f}')
     print(f'egp graph : {egp_mean:.4f} ± {egp_std:.4f}')

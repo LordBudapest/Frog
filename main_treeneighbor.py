@@ -26,7 +26,7 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 NUM_EPOCHS = 200
 LR = 0.001
-BATCH_SIZE = 4096
+BATCH_SIZE = 1024
 NUM_ITER = 1
 WEIGHT_DECAY = 5e-4
 EARLY_STOP_PATIENCE = 50

@@ -549,10 +549,10 @@ def main():
 
     print("\nFinal aggregated scores:")
     print(f'base graph (no expander): {base_mean:.4f} ± {base_std:.4f}')
-    print(f'egp graph (no expander): {egp_mean:.4f} ± {egp_std:.4f}')
-    print(f'p-egp graph (no expander): {p_egp_mean:.4f} ± {p_egp_std:.4f}')
-    print(f'cgp graph (no expander): {cgp_mean:.4f} ± {cgp_std:.4f}')
-    print(f'p-cgp graph (no expander): {p_cgp_mean:.4f} ± {p_cgp_std:.4f}')
+    print(f'egp graph : {egp_mean:.4f} ± {egp_std:.4f}')
+    print(f'p-egp graph : {p_egp_mean:.4f} ± {p_egp_std:.4f}')
+    print(f'cgp graph : {cgp_mean:.4f} ± {cgp_std:.4f}')
+    print(f'p-cgp graph : {p_cgp_mean:.4f} ± {p_cgp_std:.4f}')
     print(f'rand graph (no expander): {rand_mean:.4f} ± {rand_std:.4f}')
     print(f'p-rand graph (no expander): {p_rand_mean:.4f} ± {p_rand_std:.4f}')
 

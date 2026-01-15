@@ -24,7 +24,7 @@ from helpers import get_cayley_n, cayley_graph_size, get_cayley_graph
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-NUM_EPOCHS = 400
+NUM_EPOCHS = 200
 LR = 0.001
 BATCH_SIZE = 4096
 NUM_ITER = 1

@@ -27,15 +27,15 @@ RESULTS_DIR = 'results'
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 #HYPERPARAMETERS
-NUM_EPOCHS = 500
+NUM_EPOCHS = 250
 LR = 0.001
 BATCH_SIZE = 128
 NUM_ITER = 1
 
 #MODEL HYPERPARAMS
-NUM_LAYERS = 6
+NUM_LAYERS = 5
 HIDDEN_DIM = 64
-DROPOUT = 0.5
+DROPOUT = 0.0
 
 #Scheduler hyperparams
 REDUCE_FACTOR = 0.5
@@ -428,7 +428,7 @@ def main():
     print(f'INPUT_DIM = {INPUT_DIM}, OUTPUT_DIM = {OUTPUT_DIM}')
 
     #Multiseed evaluation and mean\pm sd reporting(LRGB practice: 10 seeds)
-    SEEDS = list(range(10))
+    SEEDS = [0,1,2,3,4]
     results = {
         'base': [], 'egp': [], 'p-egp': [], 'rand': [], 'p-rand': [], 'cgp': [], 'p-cgp': []
     }
@@ -477,32 +477,6 @@ def main():
                 'ap': float(test_ap)
             }) + '\n')
 
-        rand_model = PeptidesGNN(transform_name='rand', is_cgp=False).to(DEVICE)
-        print('Experiments for rand (random regular per odd layer)')
-        test_ap = (run_experiment(rand_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='base'))
-        results['rand'].append(test_ap)
-        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
-        with open(results_file, 'a') as f:
-            f.write(json.dumps({
-                'dataset': 'peptides-func',
-                'mode': 'rand',
-                'seed': int(seed),
-                'ap': float(test_ap)
-            }) + '\n')
-
-        p_rand_model = PeptidesGNN(transform_name='p-rand', is_cgp=False).to(DEVICE)
-        print('Experiments for p-rand(per-epoch random base, permuted per odd layer)')
-        test_ap = (run_experiment(p_rand_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='base'))
-        results['p-rand'].append(test_ap)
-        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
-        with open(results_file, 'a') as f:
-            f.write(json.dumps({
-                'dataset': 'peptides-func',
-                'mode': 'p-rand',
-                'seed': int(seed),
-                'ap': float(test_ap)
-            }) + '\n')
-
         cgp_model = PeptidesGNN(transform_name='CGP', is_cgp=True).to(DEVICE)
         print('Experiments for cgp')
         test_ap = (run_experiment(cgp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='CGP'))
@@ -516,19 +490,6 @@ def main():
                 'ap': float(test_ap)
             }) + '\n')
 
-        p_cgp_model = PeptidesGNN(transform_name='P-CGP', is_cgp=True).to(DEVICE)
-        print('Experiments for p-cgp')
-        test_ap = (run_experiment(p_cgp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='P-CGP'))
-        results['p-cgp'].append(test_ap)
-        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
-        with open(results_file, 'a') as f:
-            f.write(json.dumps({
-                'dataset': 'peptides-func',
-                'mode': 'p-cgp',
-                'seed': int(seed),
-                'ap': float(test_ap)
-            }) + '\n')
-
 
     print(f'''\nHyper parameters for this test\n#Training parameters\nNUM_EPOCHS = {NUM_EPOCHS}\nLR = {LR}\nBATCH_SIZE = {BATCH_SIZE}\nSEEDS = {SEEDS}\n\n#Scheduler: ReduceLRonPlateau\nREDUCE_FACTOR:{REDUCE_FACTOR}\nPATIENCE={PATIENCE}\nMIN_LR={MIN_LR} \n
           #Early stopping
@@ -537,7 +498,7 @@ def main():
           \n# GNN\nNUM_LAYERS = {NUM_LAYERS}\nHIDDEN_DIM={HIDDEN_DIM}\nDROPOUT = {DROPOUT}\nDEGREE_D = {DEGREE_D}''')
 
     print('Final Test AP (mean ± sd over seeds):')
-    for key in ['base','egp','p-egp','rand','p-rand','cgp','p-cgp']:
+    for key in ['base','egp','p-egp','cgp']:
         arr = np.array(results[key], dtype = float)
         print(f'{key}: {arr.mean():.4f} ± {arr.std(ddof=1):.4f}')
 

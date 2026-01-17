@@ -35,13 +35,14 @@ SCHEDULER_THRESHOLD_MODE = 'abs'
 SCHEDULER_FACTOR = 0.5
 SCHEDULER_PATIENCE = 10
 
-NUM_LAYERS = 12
 HIDDEN_DIM = 64
 #when num_layer = 8 then for depth = 3 it massively beat egp but for depth = 5 it struggled to even train properly
 #so let's try num_layer = 12 and check if it improves the accuracies for depth = 5
 DROPOUT = 0.0
 
 DEPTH = 5
+NUM_LAYERS = DEPTH + 1
+#For consistent results stick to num_layers = depth + 1 for treeneighbormatch task
 TRAIN_FRACTION = 0.8
 VAL_FRACTION = 0.1
 

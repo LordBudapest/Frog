@@ -47,9 +47,9 @@ ES_PATIENCE = 50
 ES_MIN_DELTA = 1e-4
 
 DEGREE_D =  int(os.getenv('DEGREE_D','4'))
-DATASET_NAME = 'peptides-func'
+DATASET_NAME = 'peptides-struct'
 current_dir = os.path.dirname(os.path.abspath(__file__))
-DATA_ROOT = os.path.join(current_dir, 'copy-peptides-func')
+DATA_ROOT = os.path.join(current_dir, 'datasets')
 
 INPUT_DIM = None
 OUTPUT_DIM = None
@@ -318,59 +318,34 @@ def train(model: nn.Module, loader: DataLoader, optimiser: torch.optim.Optimizer
         loss.backward()
         optimiser.step()
 
-def _average_precision_binary(scores: torch.Tensor, labels: torch.Tensor) -> float:
-    '''
-    Compute average precision for a single binary label vector.
-    scores: probabilities in [0,1] shape [N]
-    labels: 0/1 floats shape [N]
-    '''
-    s = scores.detach().cpu().numpy()
-    y = labels.detach().cpu().numpy().astype(np.int32)
-    n_pos = int(y.sum())
-    if n_pos == 0:
-        return 0.0
-    order = np.argsort(-s)
-    y_sorted = y[order]
-    tp = np.cumsum(y_sorted)
-    k = np.arange(1, len(y_sorted) + 1)
-    precision = tp / k
-    ap = float(precision[y_sorted == 1].sum() / max(1, n_pos))
-    return ap
 
-def eval_ap(model: nn.Module, loader: DataLoader) -> float:
+def eval_mae(model: nn.Module, loader: DataLoader) -> float:
     model.eval()
-    all_logits = []
-    all_labels = []
+    total_abs = 0.0
+    total_count = 0
     with torch.no_grad():
         for batch in loader:
             batch = batch.to(DEVICE)
             y = batch.y.to(DEVICE).float()
             out = model(batch)
-            all_logits.append(out)
-            all_labels.append(y)
-    if len(all_logits) == 0:
+            diff = (out - y).abs()
+            total_abs += float(diff.sum().item())
+            total_count += int(diff.numel())
+    if total_count == 0:
         return 0.0
-    logits = torch.cat(all_logits, dim=0)
-    labels = torch.cat(all_labels, dim=0)
-    probs = torch.sigmoid(logits)
-    num_classes = int(labels.size(-1))
-    ap_per_class = []
-    for i in range(num_classes):
-        ap_i = _average_precision_binary(probs[:, i], labels[:, i])
-        ap_per_class.append(ap_i)
-    return float(np.mean(ap_per_class))
+    return total_abs / total_count
 
 def run_experiment(model: nn.Module,
                    train_list: list[Data], val_list: list[Data], test_list: list[Data],
                    train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader,
                    transform_name: str | None = None):
     optimiser = torch.optim.Adam(model.parameters(), lr=LR)
-    loss_fn = nn.BCEWithLogitsLoss()
-    scheduler = ReduceLROnPlateau(optimiser, mode='max', factor=REDUCE_FACTOR, patience=PATIENCE, min_lr=MIN_LR, verbose=False)
+    loss_fn = nn.L1Loss()
+    scheduler = ReduceLROnPlateau(optimiser, mode='min', factor=REDUCE_FACTOR, patience=PATIENCE, min_lr=MIN_LR, verbose=False)
     train_curve = []
     validation_curve = []
     test_curve = []
-    best_val = -float('inf')
+    best_val = float('inf')
     best_test_at_best_val = None
     epochs_no_improve = 0
 
@@ -387,29 +362,29 @@ def run_experiment(model: nn.Module,
             model.gnn_node.begin_epoch()
         train(model, train_loader, optimiser=optimiser, loss_fn=loss_fn)
 
-        train_ap = eval_ap(model, train_loader)
-        validation_ap = eval_ap(model, val_loader)
-        scheduler.step(validation_ap)
-        test_ap = eval_ap(model, test_loader)
+        train_mae = eval_mae(model, train_loader)
+        validation_mae = eval_mae(model, train_loader)
+        scheduler.step(validation_mae)
+        test_mae = eval_mae(model, test_loader)
 
-        train_curve.append(train_ap)
-        validation_curve.append(validation_ap)
-        test_curve.append(test_ap)
+        train_curve.append(train_mae)
+        validation_curve.append(validation_mae)
+        test_curve.append(test_mae)
 
-        print(f'Train AP: {train_ap:.4f}, validation AP: {validation_ap:.4f}, test AP: {test_ap:.4f}\n')
+        print(f'Train MAE: {train_mae:.6f}, validation MAE: {validation_mae:.6f}, test MAE: {test_mae:.6f}\n')
         #Early stopping check(on validation AP)
-        if validation_ap > best_val + ES_MIN_DELTA:
-            best_val = validation_ap
+        if validation_mae > best_val - ES_MIN_DELTA:
+            best_val = validation_mae
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
             if ES_PATIENCE > 0 and epochs_no_improve >= ES_PATIENCE:
                 print(f'Early stopping triggered at epoch {epoch}(no improvement for {epochs_no_improve} epochs)')
                 break
-    best_validation_epoch = int(np.argmax(np.array(validation_curve)))
+    best_validation_epoch = int(np.argmin(np.array(validation_curve)))
     print('Finished training')
-    print(f'Best validation score: {validation_curve[best_validation_epoch]:.4f}')
-    print(f'Final test score: {test_curve[best_validation_epoch]:.4f}')
+    print(f'Best validation score: {validation_curve[best_validation_epoch]:.6f}')
+    print(f'Final test score: {test_curve[best_validation_epoch]:.6f}')
     return test_curve[best_validation_epoch]
 
 def main():
@@ -418,7 +393,7 @@ def main():
     train_list, val_list, test_list, train_loader, val_loader, test_loader, train_ds = get_loaders(DATA_ROOT, DATASET_NAME, batch_size=BATCH_SIZE)
     INPUT_DIM = int(train_ds.num_node_features)
     first_y = train_ds[0].y
-    OUTPUT_DIM = int(first_y.size(-1) if first_y.dim() > 1 else 2)
+    OUTPUT_DIM = int(first_y.size(-1)) if first_y.dim() >= 1 else 1
 
     print(f'Dataset: {DATASET_NAME}')
     print(f'INPUT_DIM = {INPUT_DIM}, OUTPUT_DIM = {OUTPUT_DIM}')
@@ -436,54 +411,54 @@ def main():
 
         base_model = PeptidesGNN(transform_name='base', is_cgp=False).to(DEVICE)
         print('Experiments for the base graph (no expanders)')
-        test_ap = run_experiment(base_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='base')
-        results['base'].append(test_ap)
-        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
+        test_mae = run_experiment(base_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='base')
+        results['base'].append(test_mae)
+        results_file = os.path.join(RESULTS_DIR, f'peptides_struct_seed{seed}.jsonl')
         with open(results_file, 'a') as f:
             f.write(json.dumps({
-                'dataset': 'peptides-func',
+                'dataset': 'peptides-struct',
                 'mode': 'base',
                 'seed': int(seed),
-                'ap': float(test_ap)
+                'mae': float(test_mae)
             }) + '\n')
 
         egp_model = PeptidesGNN(transform_name='EGP', is_cgp=False).to(DEVICE)
         print('Experiments for egp')
-        test_ap = (run_experiment(egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='EGP'))
-        results['egp'].append(test_ap)
-        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
+        test_mae = (run_experiment(egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='EGP'))
+        results['egp'].append(test_mae)
+        results_file = os.path.join(RESULTS_DIR, f'peptides_struct_seed{seed}.jsonl')
         with open(results_file, 'a') as f:
             f.write(json.dumps({
-                'dataset': 'peptides-func',
+                'dataset': 'peptides-struct',
                 'mode': 'egp',
                 'seed': int(seed),
-                'ap': float(test_ap)
+                'mae': float(test_mae)
             }) + '\n')
 
         p_egp_model = PeptidesGNN(transform_name='P-EGP', is_cgp=False).to(DEVICE)
         print('Experiments for p-egp')
-        test_ap = (run_experiment(p_egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='P-EGP'))
-        results['p-egp'].append(test_ap)
-        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
+        test_mae = (run_experiment(p_egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='P-EGP'))
+        results['p-egp'].append(test_mae)
+        results_file = os.path.join(RESULTS_DIR, f'peptides_struct_seed{seed}.jsonl')
         with open(results_file, 'a') as f:
             f.write(json.dumps({
-                'dataset': 'peptides-func',
+                'dataset': 'peptides-struct',
                 'mode': 'p-egp',
                 'seed': int(seed),
-                'ap': float(test_ap)
+                'mae': float(test_mae)
             }) + '\n')
 
         cgp_model = PeptidesGNN(transform_name='CGP', is_cgp=True).to(DEVICE)
         print('Experiments for cgp')
-        test_ap = (run_experiment(cgp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='CGP'))
-        results['cgp'].append(test_ap)
-        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
+        test_mae = (run_experiment(cgp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='CGP'))
+        results['cgp'].append(test_mae)
+        results_file = os.path.join(RESULTS_DIR, f'peptides_struct_seed{seed}.jsonl')
         with open(results_file, 'a') as f:
             f.write(json.dumps({
-                'dataset': 'peptides-func',
+                'dataset': 'peptides-struct',
                 'mode': 'cgp',
                 'seed': int(seed),
-                'ap': float(test_ap)
+                'mae': float(test_mae)
             }) + '\n')
 
 
@@ -493,10 +468,10 @@ def main():
           ES_MIN_DELTA = {ES_MIN_DELTA}
           \n# GNN\nNUM_LAYERS = {NUM_LAYERS}\nHIDDEN_DIM={HIDDEN_DIM}\nDROPOUT = {DROPOUT}\nDEGREE_D = {DEGREE_D}''')
 
-    print('Final Test AP (mean ± sd over seeds):')
+    print('Final Test MAE (mean ± sd over seeds):')
     for key in ['base','egp','p-egp','cgp']:
         arr = np.array(results[key], dtype = float)
-        print(f'{key}: {arr.mean():.4f} ± {arr.std(ddof=1):.4f}')
+        print(f'{key}: {arr.mean():.6f} ± {arr.std(ddof=1):.6f}')
 
 if __name__ == '__main__':
     main()

@@ -373,7 +373,7 @@ def run_experiment(model: nn.Module,
 
         print(f'Train MAE: {train_mae:.6f}, validation MAE: {validation_mae:.6f}, test MAE: {test_mae:.6f}\n')
         #Early stopping check(on validation AP)
-        if validation_mae > best_val - ES_MIN_DELTA:
+        if validation_mae < best_val - ES_MIN_DELTA:
             best_val = validation_mae
             epochs_no_improve = 0
         else:

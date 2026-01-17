@@ -293,14 +293,21 @@ class TreeGNNNode(nn.Module):
         if key not in self.pr_cache:
             self.pr_cache[key] = self._random_regular_local_edge_index(n, self.degree_d)
         return self.pr_cache[key]
-    def _compute_alt_edge_index(self, batched_data: Data):
+    def _compute_alt_edge_index(self, batched_data: Data, layer_idx: int | None = None):
         device = batched_data.edge_index.device
         batch = batched_data.batch
         counts, offsets = self._batch_counts_offsets(batch)
         mode = (self.mode or 'base').lower()
         if mode in ['egp', 'cgp']:
             return self._batched_cayley_edge_index(batched_data, counts, offsets, device)
-        if mode in ['p-egp','p-cgp']:
+        if mode in ['p-egp']:
+            base_edges = self._batched_cayley_edge_index(batched_data, counts, offsets, device)
+            if layer_idx ==1: #only first expander layer is permuted for treeneighbormatch
+                perm = self._blockwise_perm(counts, offsets, device)
+                return perm[base_edges]
+            else:
+                return base_edges
+        if mode in ['p-cgp']:
             base_edges = self._batched_cayley_edge_index(batched_data, counts, offsets, device)
             perm = self._blockwise_perm(counts, offsets, device)
             return perm[base_edges]
@@ -337,7 +344,7 @@ class TreeGNNNode(nn.Module):
             base_modes = ['egp','cgp', 'p-egp','p-cgp','rand','p-rand']
             use_alt = (self.mode in base_modes and (layer % 2 == 1))
             if use_alt:
-                alt_edge_index = self._compute_alt_edge_index(batched_data)
+                alt_edge_index = self._compute_alt_edge_index(batched_data, layex_idx = layer)
                 h = self.convs[layer](h_list[layer], alt_edge_index)
             else:
                 h = self.convs[layer](h_list[layer], base_edge_index)
@@ -449,7 +456,7 @@ def run_experiment(model: nn.Module,
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Tree-NeighborsMatch synthetic benchmark")
-    parser.add_argument('--seeds', type=str, default='1,11,21,31,41', help='Comma-seprated list of RNG seeds')
+    parser.add_argument('--seeds', type=str, default='0,1,2,3,4', help='Comma-seprated list of RNG seeds')
     parser.add_argument('--depth', type=int, default=DEPTH, help='Tree depth for dataset generation')
     parser.add_argument('--hidden_dim', type=int, default=HIDDEN_DIM, help='Hidden dimension')
     parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of GNN layers')
@@ -503,25 +510,12 @@ def main():
         egp_scores.append(egp_score/ max(1, NUM_ITER))
 
         p_egp_model = TreeGNN(transform_name='P-EGP', is_cgp=False, out_dim=OUTPUT_DIM).to(DEVICE)
-        print('Experiments for p-egp')
+        print('Experiments for p-egp, with only first expander layer permuted')
         p_egp_score = 0.0
         for _ in range(NUM_ITER):
             p_egp_score += run_experiment(p_egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, criterion, transform_name='P-EGP')
         p_egp_scores.append(p_egp_score/ max(1, NUM_ITER))
 
-        rand_model = TreeGNN(transform_name='rand', is_cgp=False, out_dim=OUTPUT_DIM).to(DEVICE)
-        print('Experiments for rand(random regular per odd layer)')
-        rand_score = 0.0
-        for _ in range(NUM_ITER):
-            rand_score += run_experiment(rand_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, criterion, transform_name='base')
-        rand_scores.append(rand_score/ max(1, NUM_ITER))
-
-        p_rand_model = TreeGNN(transform_name='p-rand', is_cgp=False, out_dim=OUTPUT_DIM).to(DEVICE)
-        print('Experiments for p-rand( per-epoch random base, permuted per odd layer)')
-        p_rand_score = 0.0
-        for _ in range(NUM_ITER):
-            p_rand_score += run_experiment(p_rand_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, criterion, transform_name='base')
-        p_rand_scores.append(p_rand_score/ max(1, NUM_ITER))
 
         cgp_model = TreeGNN(transform_name='CGP', is_cgp=True, out_dim=OUTPUT_DIM).to(DEVICE)
         print('Experiments for cgp')
@@ -530,12 +524,6 @@ def main():
             cgp_score += run_experiment(cgp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, criterion, transform_name='CGP')
         cgp_scores.append(cgp_score/ max(1, NUM_ITER))
 
-        p_cgp_model = TreeGNN(transform_name='P-CGP', is_cgp=True, out_dim=OUTPUT_DIM).to(DEVICE)
-        print('Experiments for p-cgp')
-        p_cgp_score = 0.0
-        for _ in range(NUM_ITER):
-            p_cgp_score += run_experiment(p_cgp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, criterion, transform_name='P-CGP')
-        p_cgp_scores.append(p_cgp_score/ max(1, NUM_ITER))
 
     def mean_std(x):
         arr = np.array(x, dtype=float)
@@ -545,9 +533,6 @@ def main():
     egp_mean, egp_std = mean_std(egp_scores)
     p_egp_mean, p_egp_std = mean_std(p_egp_scores)
     cgp_mean, cgp_std = mean_std(cgp_scores)
-    p_cgp_mean, p_cgp_std = mean_std(p_cgp_scores)
-    rand_mean, rand_std = mean_std(rand_scores)
-    p_rand_mean, p_rand_std = mean_std(p_rand_scores)
 
     print(f'''
     Hyper parameters for this test are:
@@ -576,9 +561,6 @@ def main():
     print(f'egp graph : {egp_mean:.4f} ± {egp_std:.4f}')
     print(f'p-egp graph : {p_egp_mean:.4f} ± {p_egp_std:.4f}')
     print(f'cgp graph : {cgp_mean:.4f} ± {cgp_std:.4f}')
-    print(f'p-cgp graph : {p_cgp_mean:.4f} ± {p_cgp_std:.4f}')
-    print(f'rand graph (no expander): {rand_mean:.4f} ± {rand_std:.4f}')
-    print(f'p-rand graph (no expander): {p_rand_mean:.4f} ± {p_rand_std:.4f}')
 
 if __name__ == '__main__':
     main()

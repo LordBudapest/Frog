@@ -466,14 +466,14 @@ def parse_args():
 def main():
     global INPUT_DIM, OUTPUT_DIM, NUM_LAYERS, HIDDEN_DIM, BATCH_SIZE
     args = parse_args()
-    depth = int(args.depth)
+    DEPTH = int(args.depth)
     NUM_LAYERS = int(args.num_layers)
     HIDDEN_DIM = int(args.hidden_dim)
     BATCH_SIZE = int(args.batch_size)
     seeds = [int(s.strip()) for s in args.seeds.split(',') if s.strip()]
 
     print('Tree-NeighborsMatch (synthetic benchmark): Accuracy( higher is better)')
-    print(f'Reporting: mean ± standard deviation over {len(seeds)} seeds on the test split, evaluated at the best validation epoch; depth={depth}')
+    print(f'Reporting: mean ± standard deviation over {len(seeds)} seeds on the test split, evaluated at the best validation epoch; depth={DEPTH}')
 
     base_scores = []
     egp_scores = []
@@ -488,11 +488,11 @@ def main():
         np.random.seed(seed)
         random.seed(seed)
         train_list, val_list, test_list, train_loader, val_loader, test_loader, dim0, out_dim, criterion = get_loaders(
-            depth, TRAIN_FRACTION, batch_size=BATCH_SIZE, val_fraction=VAL_FRACTION, seed=seed
+            DEPTH, TRAIN_FRACTION, batch_size=BATCH_SIZE, val_fraction=VAL_FRACTION, seed=seed
         )
         INPUT_DIM = int(dim0)
         OUTPUT_DIM = int(out_dim)
-        print(f'\nDataset: Tree-NeighborsMatch (depth={depth}, seed={seed})')
+        print(f'\nDataset: Tree-NeighborsMatch (depth={DEPTH}, seed={seed})')
         print(f'INPUT_DIM = {INPUT_DIM}, OUTPUT_DIM = {OUTPUT_DIM}( +1 LOGITS)')
 
         base_model = TreeGNN(transform_name='base', is_cgp=False, out_dim=OUTPUT_DIM).to(DEVICE)

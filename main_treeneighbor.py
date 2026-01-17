@@ -344,7 +344,7 @@ class TreeGNNNode(nn.Module):
             base_modes = ['egp','cgp', 'p-egp','p-cgp','rand','p-rand']
             use_alt = (self.mode in base_modes and (layer % 2 == 1))
             if use_alt:
-                alt_edge_index = self._compute_alt_edge_index(batched_data, layex_idx = layer)
+                alt_edge_index = self._compute_alt_edge_index(batched_data, layer_idx = layer)
                 h = self.convs[layer](h_list[layer], alt_edge_index)
             else:
                 h = self.convs[layer](h_list[layer], base_edge_index)

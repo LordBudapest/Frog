@@ -363,7 +363,7 @@ def run_experiment(model: nn.Module,
         train(model, train_loader, optimiser=optimiser, loss_fn=loss_fn)
 
         train_mae = eval_mae(model, train_loader)
-        validation_mae = eval_mae(model, train_loader)
+        validation_mae = eval_mae(model, val_loader)
         scheduler.step(validation_mae)
         test_mae = eval_mae(model, test_loader)
 

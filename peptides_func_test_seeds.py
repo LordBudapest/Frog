@@ -27,14 +27,14 @@ RESULTS_DIR = 'results'
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 #HYPERPARAMETERS
-NUM_EPOCHS = 4
+NUM_EPOCHS = 250
 LR = 0.001
-BATCH_SIZE = 4
+BATCH_SIZE = 128
 NUM_ITER = 1
 
 #MODEL HYPERPARAMS
-NUM_LAYERS = 4
-HIDDEN_DIM = 4
+NUM_LAYERS = 5
+HIDDEN_DIM = 64
 DROPOUT = 0.0
 
 #Scheduler hyperparams
@@ -113,6 +113,10 @@ class PeptidesGNNNode(nn.Module):
         self.current_epoch = None
         self.current_batch = None
         self.current_layer = None
+        self.exp_cuda_seed = None
+        self.fixed_layer_generators = {}
+
+
 
 
         self.convs = nn.ModuleList()
@@ -157,34 +161,97 @@ class PeptidesGNNNode(nn.Module):
     def _blockwise_perm(self, counts: torch.Tensor, offsets: torch.Tensor, device):
         total = int(counts.sum().item())
         perm = torch.empty(total, dtype=torch.long, device=device)
+
+        gen = None
+        ep_seed = None
+        # ---------- f-EGP ----------
+        if self.mode == 'f-egp':
+            assert self.exp_cuda_seed is not None
+            assert self.current_layer is not None
+
+            key = self.current_layer
+            if key not in self.fixed_layer_generators:
+                seed = (
+                    self.exp_cuda_seed
+                    + 1_000 * self.current_layer
+                ) % (2**63)
+
+                gen = torch.Generator(device=device)
+                gen.manual_seed(seed)
+                self.fixed_layer_generators[key] = gen
+
+                print(
+                    f"[F-EGP SET] layer={self.current_layer}, seed={seed}"
+                )
+            else:
+                gen = self.fixed_layer_generators[key]
+
+        # ---------- ep-EGP ----------
+        elif self.mode == 'ep-egp':
+        # ---- ep-EGP: seed ONCE per (epoch, layer)
+            assert self.exp_cuda_seed is not None
+            assert self.current_epoch is not None
+            assert self.current_layer is not None
+
+            ep_seed = (
+                self.exp_cuda_seed
+                + 1_000_000 * self.current_epoch
+                + 1_000 * self.current_layer
+            ) % (2**63)
+
+            gen = torch.Generator(device=device)
+            gen.manual_seed(ep_seed)
+            '''
+            print(
+                f"[EP-EGP SET] "
+                f"epoch={self.current_epoch}, "
+                f"layer={self.current_layer}, "
+                f"seed={ep_seed}"
+            )
+            '''
+
         for gid in range(len(counts)):
             n = int(counts[gid].item())
             if n == 0:
                 continue
             start = int(offsets[gid].item())
-            cpu_state = torch.get_rng_state()
-            cpu_fingerprint = int(torch.sum(cpu_state[:16]).item())
 
-            if torch.cuda.is_available():
-                cuda_state = torch.cuda.get_rng_state(device=device)
-                cuda_fingerprint = int(torch.sum(cuda_state[:16]).item())
+            # ---- p-EGP diagnostics (global RNG)
+            if self.mode == 'p-egp':
+                assert self.current_epoch is not None
+                assert self.current_batch is not None
+                assert self.current_layer is not None
+
+                cpu_state = torch.get_rng_state()
+                cpu_fp = int(torch.sum(cpu_state[:16]).item())
+
+                if torch.cuda.is_available():
+                    cuda_state = torch.cuda.get_rng_state()
+                    cuda_fp = int(torch.sum(cuda_state[:16]).item())
+                else:
+                    cuda_fp = -1
+
+                print(
+                    f"[P-EGP RNG] "
+                    f"epoch={self.current_epoch}, "
+                    f"batch={self.current_batch}, "
+                    f"layer={self.current_layer}, "
+                    f"gid={gid}, "
+                    f"cpu_fp={cpu_fp}, "
+                    f"cuda_fp={cuda_fp}"
+                )
+
+            # ---- generate permutation
+            if gen is not None:
+                local_perm = torch.randperm(n, generator=gen, device=device)
             else:
-                cuda_fingerprint = -1
-            assert self.current_epoch is not None
-            assert self.current_batch is not None
-            assert self.current_layer is not None
-            print(
-                f"[P-EGP RNG] "
-                f"epoch={self.current_epoch}, "
-                f"batch={self.current_batch}, "
-                f"layer={self.current_layer}, "
-                f"gid={gid}, "
-                f"cpu_rng={cpu_fingerprint}, "
-                f"cuda_rng={cuda_fingerprint}"
-            )
-            local_perm = torch.randperm(n, device=device)
+                local_perm = torch.randperm(n, device=device)
+
             perm[start:start+n] = start + local_perm
+
         return perm
+
+
     def _random_regular_local_edge_index(self, n: int, d: int):
         if n <= 1:
             return torch.empty((2, 0), dtype=torch.long)
@@ -284,7 +351,7 @@ class PeptidesGNNNode(nn.Module):
         mode = (self.mode or 'base').lower()
         if mode in ['egp', 'cgp']:
             return self._batched_cayley_edge_index(batched_data, counts, offsets, device)
-        if mode in ['p-egp','p-cgp']:
+        if mode in ['p-egp','p-cgp', 'ep-egp','f-egp']:
             base_edges = self._batched_cayley_edge_index(batched_data, counts, offsets, device)
             perm = self._blockwise_perm(counts, offsets, device)
             return perm[base_edges]
@@ -313,7 +380,7 @@ class PeptidesGNNNode(nn.Module):
         else:
             h_list = [x.float()]
         for layer in range(self.num_layer):
-            base_modes = ['egp','cgp', 'p-egp','p-cgp','rand','p-rand']
+            base_modes = ['egp','cgp', 'p-egp','ep-egp','f-egp','p-cgp','rand','p-rand']
             use_alt = (self.mode in base_modes and (layer % 2 == 1))
             if use_alt:
                 self.current_layer = layer
@@ -422,6 +489,10 @@ def run_experiment(model: nn.Module,
         transform_obj.apply_to_dataset(train_list)
         transform_obj.apply_to_dataset(val_list)
         transform_obj.apply_to_dataset(test_list)
+    if hasattr(model, 'gnn_node'):
+        # capture experiment-level CUDA seed ONCE
+        model.gnn_node.exp_cuda_seed = torch.cuda.initial_seed()
+
     print('Start training')
     for epoch in range(1, 1 + NUM_EPOCHS):
         print(f'Epoch: {epoch}')
@@ -458,9 +529,10 @@ def main():
     global INPUT_DIM, OUTPUT_DIM
 
     train_list, val_list, test_list, train_loader, val_loader, test_loader, train_ds = get_loaders(DATA_ROOT, DATASET_NAME, batch_size=BATCH_SIZE)
+    '''
     DEBUG_N_TRAIN = 8   # try 4, 8, 16
-    DEBUG_N_VAL   = 4
-    DEBUG_N_TEST  = 4
+    DEBUG_N_VAL   = 2
+    DEBUG_N_TEST  = 2
     
     train_list = train_list[:DEBUG_N_TRAIN]
     val_list   = val_list[:DEBUG_N_VAL]
@@ -469,6 +541,7 @@ def main():
     train_loader = DataLoader(train_list, batch_size=BATCH_SIZE, shuffle=True)
     val_loader   = DataLoader(val_list, batch_size=BATCH_SIZE)
     test_loader  = DataLoader(test_list, batch_size=BATCH_SIZE)
+    '''
     INPUT_DIM = int(train_ds.num_node_features)
     first_y = train_ds[0].y
     OUTPUT_DIM = int(first_y.size(-1) if first_y.dim() > 1 else 2)
@@ -479,14 +552,14 @@ def main():
     #Multiseed evaluation and mean\pm sd reporting
     SEEDS = [0]
     results = {
-        'base': [], 'egp': [], 'p-egp': [], 'rand': [], 'p-rand': [], 'cgp': [], 'p-cgp': []
+        'base': [], 'egp': [], 'p-egp': [], 'rand': [], 'p-rand': [], 'cgp': [], 'p-cgp': [], 'ep-egp':[],'f-egp':[]
     }
     for seed in SEEDS:
         torch.manual_seed(seed)
         np.random.seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
-
+        '''
         p_egp_model = PeptidesGNN(transform_name='P-EGP', is_cgp=False).to(DEVICE)
         print('Experiments for p-egp')
         test_ap = (run_experiment(p_egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='P-EGP'))
@@ -499,8 +572,34 @@ def main():
                 'seed': int(seed),
                 'ap': float(test_ap)
             }) + '\n')
+        
+        ep_egp_model = PeptidesGNN(transform_name='EP-EGP', is_cgp=False).to(DEVICE)
+        print('Experiments for ep-egp')
+        test_ap = (run_experiment(ep_egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='EP-EGP'))
+        results['ep-egp'].append(test_ap)
+        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
+        with open(results_file, 'a') as f:
+            f.write(json.dumps({
+                'dataset': 'peptides-func',
+                'mode': 'ep-egp',
+                'seed': int(seed),
+                'ap': float(test_ap)
+            }) + '\n')
+        '''
+        f_egp_model = PeptidesGNN(transform_name='F-EGP', is_cgp=False).to(DEVICE)
+        print('Experiments for f-egp')
+        test_ap = (run_experiment(f_egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='F-EGP'))
+        results['f-egp'].append(test_ap)
+        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
+        with open(results_file, 'a') as f:
+            f.write(json.dumps({
+                'dataset': 'peptides-func',
+                'mode': 'f-egp',
+                'seed': int(seed),
+                'ap': float(test_ap)
+            }) + '\n')
 
-
+        
     print(f'''\nHyper parameters for this test\n#Training parameters\nNUM_EPOCHS = {NUM_EPOCHS}\nLR = {LR}\nBATCH_SIZE = {BATCH_SIZE}\nSEEDS = {SEEDS}\n\n#Scheduler: ReduceLRonPlateau\nREDUCE_FACTOR:{REDUCE_FACTOR}\nPATIENCE={PATIENCE}\nMIN_LR={MIN_LR} \n
           #Early stopping
           ES_PATIENCE={ES_PATIENCE}
@@ -508,7 +607,7 @@ def main():
           \n# GNN\nNUM_LAYERS = {NUM_LAYERS}\nHIDDEN_DIM={HIDDEN_DIM}\nDROPOUT = {DROPOUT}\nDEGREE_D = {DEGREE_D}''')
 
     print('Final Test AP (mean ± sd over seeds):')
-    for key in ['p-egp']:
+    for key in ['f-egp']:
         arr = np.array(results[key], dtype = float)
         print(f'{key}: {arr.mean():.4f} ± {arr.std(ddof=1):.4f}')
 

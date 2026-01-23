@@ -27,14 +27,14 @@ RESULTS_DIR = 'results'
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 #HYPERPARAMETERS
-NUM_EPOCHS = 250
+NUM_EPOCHS = 4
 LR = 0.001
-BATCH_SIZE = 128
+BATCH_SIZE = 4
 NUM_ITER = 1
 
 #MODEL HYPERPARAMS
-NUM_LAYERS = 5
-HIDDEN_DIM = 64
+NUM_LAYERS = 4
+HIDDEN_DIM = 4
 DROPOUT = 0.0
 
 #Scheduler hyperparams
@@ -110,6 +110,11 @@ class PeptidesGNNNode(nn.Module):
         self.pr_cache: dict[int, torch.Tensor] = {}
         self.cayley_cache: dict[int, torch.Tensor] = {}
 
+        self.current_epoch = None
+        self.current_batch = None
+        self.current_layer = None
+
+
         self.convs = nn.ModuleList()
         self.batch_norms = nn.ModuleList()
         for layer in range(self.num_layer):
@@ -165,7 +170,9 @@ class PeptidesGNNNode(nn.Module):
                 cuda_fingerprint = int(torch.sum(cuda_state[:16]).item())
             else:
                 cuda_fingerprint = -1
-
+            assert self.current_epoch is not None
+            assert self.current_batch is not None
+            assert self.current_layer is not None
             print(
                 f"[P-EGP RNG] "
                 f"epoch={self.current_epoch}, "
@@ -309,6 +316,7 @@ class PeptidesGNNNode(nn.Module):
             base_modes = ['egp','cgp', 'p-egp','p-cgp','rand','p-rand']
             use_alt = (self.mode in base_modes and (layer % 2 == 1))
             if use_alt:
+                self.current_layer = layer
                 alt_edge_index = self._compute_alt_edge_index(batched_data)
                 h = self.convs[layer](h_list[layer], alt_edge_index)
             else:
@@ -339,9 +347,11 @@ class PeptidesGNN(nn.Module):
         h_graph = self.pool(h_node, batch_indicator)
         return self.graph_pred_linear(h_graph)
     
-def train(model: nn.Module, loader: DataLoader, optimiser: torch.optim.Optimizer, loss_fn):
+def train(model: nn.Module, loader: DataLoader, optimiser: torch.optim.Optimizer, loss_fn, epoch: int):
     model.train()
-    for _, batch in enumerate(tqdm(loader, desc='Iteration')):
+    for batch_idx, batch in enumerate(tqdm(loader, desc='Iteration')):
+        model.gnn_node.current_epoch = epoch
+        model.gnn_node.current_batch = batch_idx
         batch = batch.to(DEVICE)
         y = batch.y.to(DEVICE).float()
         out = model(batch)
@@ -417,7 +427,7 @@ def run_experiment(model: nn.Module,
         print(f'Epoch: {epoch}')
         if hasattr(model, 'gnn_node') and hasattr(model.gnn_node, 'begin_epoch'):
             model.gnn_node.begin_epoch()
-        train(model, train_loader, optimiser=optimiser, loss_fn=loss_fn)
+        train(model, train_loader, optimiser=optimiser, loss_fn=loss_fn, epoch=epoch)
 
         train_ap = eval_ap(model, train_loader)
         validation_ap = eval_ap(model, val_loader)
@@ -448,6 +458,17 @@ def main():
     global INPUT_DIM, OUTPUT_DIM
 
     train_list, val_list, test_list, train_loader, val_loader, test_loader, train_ds = get_loaders(DATA_ROOT, DATASET_NAME, batch_size=BATCH_SIZE)
+    DEBUG_N_TRAIN = 8   # try 4, 8, 16
+    DEBUG_N_VAL   = 4
+    DEBUG_N_TEST  = 4
+    
+    train_list = train_list[:DEBUG_N_TRAIN]
+    val_list   = val_list[:DEBUG_N_VAL]
+    test_list  = test_list[:DEBUG_N_TEST]
+    
+    train_loader = DataLoader(train_list, batch_size=BATCH_SIZE, shuffle=True)
+    val_loader   = DataLoader(val_list, batch_size=BATCH_SIZE)
+    test_loader  = DataLoader(test_list, batch_size=BATCH_SIZE)
     INPUT_DIM = int(train_ds.num_node_features)
     first_y = train_ds[0].y
     OUTPUT_DIM = int(first_y.size(-1) if first_y.dim() > 1 else 2)
@@ -456,7 +477,7 @@ def main():
     print(f'INPUT_DIM = {INPUT_DIM}, OUTPUT_DIM = {OUTPUT_DIM}')
 
     #Multiseed evaluation and mean\pm sd reporting
-    SEEDS = [0,1,2,3,4]
+    SEEDS = [0]
     results = {
         'base': [], 'egp': [], 'p-egp': [], 'rand': [], 'p-rand': [], 'cgp': [], 'p-cgp': []
     }
@@ -465,32 +486,6 @@ def main():
         np.random.seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
-
-        base_model = PeptidesGNN(transform_name='base', is_cgp=False).to(DEVICE)
-        print('Experiments for the base graph (no expanders)')
-        test_ap = run_experiment(base_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='base')
-        results['base'].append(test_ap)
-        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
-        with open(results_file, 'a') as f:
-            f.write(json.dumps({
-                'dataset': 'peptides-func',
-                'mode': 'base',
-                'seed': int(seed),
-                'ap': float(test_ap)
-            }) + '\n')
-
-        egp_model = PeptidesGNN(transform_name='EGP', is_cgp=False).to(DEVICE)
-        print('Experiments for egp')
-        test_ap = (run_experiment(egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='EGP'))
-        results['egp'].append(test_ap)
-        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
-        with open(results_file, 'a') as f:
-            f.write(json.dumps({
-                'dataset': 'peptides-func',
-                'mode': 'egp',
-                'seed': int(seed),
-                'ap': float(test_ap)
-            }) + '\n')
 
         p_egp_model = PeptidesGNN(transform_name='P-EGP', is_cgp=False).to(DEVICE)
         print('Experiments for p-egp')
@@ -505,19 +500,6 @@ def main():
                 'ap': float(test_ap)
             }) + '\n')
 
-        cgp_model = PeptidesGNN(transform_name='CGP', is_cgp=True).to(DEVICE)
-        print('Experiments for cgp')
-        test_ap = (run_experiment(cgp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='CGP'))
-        results['cgp'].append(test_ap)
-        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
-        with open(results_file, 'a') as f:
-            f.write(json.dumps({
-                'dataset': 'peptides-func',
-                'mode': 'cgp',
-                'seed': int(seed),
-                'ap': float(test_ap)
-            }) + '\n')
-
 
     print(f'''\nHyper parameters for this test\n#Training parameters\nNUM_EPOCHS = {NUM_EPOCHS}\nLR = {LR}\nBATCH_SIZE = {BATCH_SIZE}\nSEEDS = {SEEDS}\n\n#Scheduler: ReduceLRonPlateau\nREDUCE_FACTOR:{REDUCE_FACTOR}\nPATIENCE={PATIENCE}\nMIN_LR={MIN_LR} \n
           #Early stopping
@@ -526,7 +508,7 @@ def main():
           \n# GNN\nNUM_LAYERS = {NUM_LAYERS}\nHIDDEN_DIM={HIDDEN_DIM}\nDROPOUT = {DROPOUT}\nDEGREE_D = {DEGREE_D}''')
 
     print('Final Test AP (mean ± sd over seeds):')
-    for key in ['base','egp','p-egp','cgp']:
+    for key in ['p-egp']:
         arr = np.array(results[key], dtype = float)
         print(f'{key}: {arr.mean():.4f} ± {arr.std(ddof=1):.4f}')
 

@@ -47,9 +47,9 @@ ES_PATIENCE = 50
 ES_MIN_DELTA = 1e-4
 
 DEGREE_D =  int(os.getenv('DEGREE_D','4'))
-DATASET_NAME = 'peptides-func'
+DATASET_NAME = 'peptides-struct'
 current_dir = os.path.dirname(os.path.abspath(__file__))
-DATA_ROOT = os.path.join(current_dir, 'copy-peptides-func')
+DATA_ROOT = os.path.join(current_dir, 'datasets')
 
 INPUT_DIM = None
 OUTPUT_DIM = None
@@ -117,8 +117,6 @@ class PeptidesGNNNode(nn.Module):
         self.fixed_layer_generators = {}
 
 
-
-
         self.convs = nn.ModuleList()
         self.batch_norms = nn.ModuleList()
         for layer in range(self.num_layer):
@@ -131,24 +129,11 @@ class PeptidesGNNNode(nn.Module):
             )
             self.convs.append(GINConv(gnn_nn))
             self.batch_norms.append(nn.BatchNorm1d(HIDDEN_DIM))
-    def _rng_fingerprint(self) -> int:
-        # CPU RNG
-        cpu_state = torch.get_rng_state()
-        cpu_hash = int(torch.sum(cpu_state[:16]).item())
-
-        # CUDA RNG (single device)
-        if torch.cuda.is_available():
-            cuda_state = torch.cuda.get_rng_state()
-            cuda_hash = int(torch.sum(cuda_state[:16]).item())
-        else:
-            cuda_hash = -1
-
-        return cpu_hash, cuda_hash
-
     def begin_epoch(self):
         self.pr_cache = {}
         if self.mode != 'f-egp':
             self.fixed_layer_generators = {}
+
 
     def _batch_counts_offsets(self, batch: torch.Tensor):
         counts = torch.bincount(batch)
@@ -165,7 +150,7 @@ class PeptidesGNNNode(nn.Module):
         perm = torch.empty(total, dtype=torch.long, device=device)
 
         gen = None
-        ep_seed = None
+
         # ---------- f-EGP ----------
         if self.mode == 'f-egp':
             assert self.exp_cuda_seed is not None
@@ -181,36 +166,23 @@ class PeptidesGNNNode(nn.Module):
                 gen = torch.Generator(device=device)
                 gen.manual_seed(seed)
                 self.fixed_layer_generators[key] = gen
-
-                print(
-                    f"[F-EGP SET] layer={self.current_layer}, seed={seed}"
-                )
             else:
                 gen = self.fixed_layer_generators[key]
 
         # ---------- ep-EGP ----------
         elif self.mode == 'ep-egp':
-        # ---- ep-EGP: seed ONCE per (epoch, layer)
             assert self.exp_cuda_seed is not None
             assert self.current_epoch is not None
             assert self.current_layer is not None
 
-            ep_seed = (
+            seed = (
                 self.exp_cuda_seed
                 + 1_000_000 * self.current_epoch
                 + 1_000 * self.current_layer
             ) % (2**63)
 
             gen = torch.Generator(device=device)
-            gen.manual_seed(ep_seed)
-            '''
-            print(
-                f"[EP-EGP SET] "
-                f"epoch={self.current_epoch}, "
-                f"layer={self.current_layer}, "
-                f"seed={ep_seed}"
-            )
-            '''
+            gen.manual_seed(seed)
 
         for gid in range(len(counts)):
             n = int(counts[gid].item())
@@ -218,32 +190,6 @@ class PeptidesGNNNode(nn.Module):
                 continue
             start = int(offsets[gid].item())
 
-            # ---- p-EGP diagnostics (global RNG)
-            if self.mode == 'p-egp':
-                assert self.current_epoch is not None
-                assert self.current_batch is not None
-                assert self.current_layer is not None
-
-                cpu_state = torch.get_rng_state()
-                cpu_fp = int(torch.sum(cpu_state[:16]).item())
-
-                if torch.cuda.is_available():
-                    cuda_state = torch.cuda.get_rng_state()
-                    cuda_fp = int(torch.sum(cuda_state[:16]).item())
-                else:
-                    cuda_fp = -1
-
-                print(
-                    f"[P-EGP RNG] "
-                    f"epoch={self.current_epoch}, "
-                    f"batch={self.current_batch}, "
-                    f"layer={self.current_layer}, "
-                    f"gid={gid}, "
-                    f"cpu_fp={cpu_fp}, "
-                    f"cuda_fp={cuda_fp}"
-                )
-
-            # ---- generate permutation
             if gen is not None:
                 local_perm = torch.randperm(n, generator=gen, device=device)
             else:
@@ -252,7 +198,6 @@ class PeptidesGNNNode(nn.Module):
             perm[start:start+n] = start + local_perm
 
         return perm
-
 
     def _random_regular_local_edge_index(self, n: int, d: int):
         if n <= 1:
@@ -353,7 +298,7 @@ class PeptidesGNNNode(nn.Module):
         mode = (self.mode or 'base').lower()
         if mode in ['egp', 'cgp']:
             return self._batched_cayley_edge_index(batched_data, counts, offsets, device)
-        if mode in ['p-egp','p-cgp', 'ep-egp','f-egp']:
+        if mode in ['p-egp','p-cgp','ep-egp','f-egp']:
             base_edges = self._batched_cayley_edge_index(batched_data, counts, offsets, device)
             perm = self._blockwise_perm(counts, offsets, device)
             return perm[base_edges]
@@ -416,72 +361,49 @@ class PeptidesGNN(nn.Module):
         h_graph = self.pool(h_node, batch_indicator)
         return self.graph_pred_linear(h_graph)
     
-def train(model: nn.Module, loader: DataLoader, optimiser: torch.optim.Optimizer, loss_fn, epoch: int):
+def train(model: nn.Module, loader: DataLoader, optimiser, loss_fn, epoch: int):
     model.train()
     for batch_idx, batch in enumerate(tqdm(loader, desc='Iteration')):
         model.gnn_node.current_epoch = epoch
         model.gnn_node.current_batch = batch_idx
+
         batch = batch.to(DEVICE)
         y = batch.y.to(DEVICE).float()
         out = model(batch)
+
         optimiser.zero_grad()
-        loss = loss_fn(input = out, target = y)
+        loss = loss_fn(input=out, target=y)
         loss.backward()
         optimiser.step()
 
-def _average_precision_binary(scores: torch.Tensor, labels: torch.Tensor) -> float:
-    '''
-    Compute average precision for a single binary label vector.
-    scores: probabilities in [0,1] shape [N]
-    labels: 0/1 floats shape [N]
-    '''
-    s = scores.detach().cpu().numpy()
-    y = labels.detach().cpu().numpy().astype(np.int32)
-    n_pos = int(y.sum())
-    if n_pos == 0:
-        return 0.0
-    order = np.argsort(-s)
-    y_sorted = y[order]
-    tp = np.cumsum(y_sorted)
-    k = np.arange(1, len(y_sorted) + 1)
-    precision = tp / k
-    ap = float(precision[y_sorted == 1].sum() / max(1, n_pos))
-    return ap
 
-def eval_ap(model: nn.Module, loader: DataLoader) -> float:
+def eval_mae(model: nn.Module, loader: DataLoader) -> float:
     model.eval()
-    all_logits = []
-    all_labels = []
+    total_abs = 0.0
+    total_count = 0
     with torch.no_grad():
         for batch in loader:
             batch = batch.to(DEVICE)
             y = batch.y.to(DEVICE).float()
             out = model(batch)
-            all_logits.append(out)
-            all_labels.append(y)
-    if len(all_logits) == 0:
+            diff = (out - y).abs()
+            total_abs += float(diff.sum().item())
+            total_count += int(diff.numel())
+    if total_count == 0:
         return 0.0
-    logits = torch.cat(all_logits, dim=0)
-    labels = torch.cat(all_labels, dim=0)
-    probs = torch.sigmoid(logits)
-    num_classes = int(labels.size(-1))
-    ap_per_class = []
-    for i in range(num_classes):
-        ap_i = _average_precision_binary(probs[:, i], labels[:, i])
-        ap_per_class.append(ap_i)
-    return float(np.mean(ap_per_class))
+    return total_abs / total_count
 
 def run_experiment(model: nn.Module,
                    train_list: list[Data], val_list: list[Data], test_list: list[Data],
                    train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader,
                    transform_name: str | None = None):
     optimiser = torch.optim.Adam(model.parameters(), lr=LR)
-    loss_fn = nn.BCEWithLogitsLoss()
-    scheduler = ReduceLROnPlateau(optimiser, mode='max', factor=REDUCE_FACTOR, patience=PATIENCE, min_lr=MIN_LR, verbose=False)
+    loss_fn = nn.L1Loss()
+    scheduler = ReduceLROnPlateau(optimiser, mode='min', factor=REDUCE_FACTOR, patience=PATIENCE, min_lr=MIN_LR, verbose=False)
     train_curve = []
     validation_curve = []
     test_curve = []
-    best_val = -float('inf')
+    best_val = float('inf')
     best_test_at_best_val = None
     epochs_no_improve = 0
 
@@ -492,7 +414,6 @@ def run_experiment(model: nn.Module,
         transform_obj.apply_to_dataset(val_list)
         transform_obj.apply_to_dataset(test_list)
     if hasattr(model, 'gnn_node'):
-        # capture experiment-level CUDA seed ONCE
         model.gnn_node.exp_cuda_seed = torch.cuda.initial_seed()
 
     print('Start training')
@@ -500,118 +421,144 @@ def run_experiment(model: nn.Module,
         print(f'Epoch: {epoch}')
         if hasattr(model, 'gnn_node') and hasattr(model.gnn_node, 'begin_epoch'):
             model.gnn_node.begin_epoch()
-        train(model, train_loader, optimiser=optimiser, loss_fn=loss_fn, epoch=epoch)
+        train(model, train_loader, optimiser, loss_fn, epoch)
 
-        train_ap = eval_ap(model, train_loader)
-        validation_ap = eval_ap(model, val_loader)
-        scheduler.step(validation_ap)
-        test_ap = eval_ap(model, test_loader)
+        train_mae = eval_mae(model, train_loader)
+        validation_mae = eval_mae(model, val_loader)
+        scheduler.step(validation_mae)
+        test_mae = eval_mae(model, test_loader)
 
-        train_curve.append(train_ap)
-        validation_curve.append(validation_ap)
-        test_curve.append(test_ap)
+        train_curve.append(train_mae)
+        validation_curve.append(validation_mae)
+        test_curve.append(test_mae)
 
-        print(f'Train AP: {train_ap:.4f}, validation AP: {validation_ap:.4f}, test AP: {test_ap:.4f}\n')
+        print(f'Train MAE: {train_mae:.6f}, validation MAE: {validation_mae:.6f}, test MAE: {test_mae:.6f}\n')
         #Early stopping check(on validation AP)
-        if validation_ap > best_val + ES_MIN_DELTA:
-            best_val = validation_ap
+        if validation_mae < best_val - ES_MIN_DELTA:
+            best_val = validation_mae
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
             if ES_PATIENCE > 0 and epochs_no_improve >= ES_PATIENCE:
                 print(f'Early stopping triggered at epoch {epoch}(no improvement for {epochs_no_improve} epochs)')
                 break
-    best_validation_epoch = int(np.argmax(np.array(validation_curve)))
+    best_validation_epoch = int(np.argmin(np.array(validation_curve)))
     print('Finished training')
-    print(f'Best validation score: {validation_curve[best_validation_epoch]:.4f}')
-    print(f'Final test score: {test_curve[best_validation_epoch]:.4f}')
+    print(f'Best validation score: {validation_curve[best_validation_epoch]:.6f}')
+    print(f'Final test score: {test_curve[best_validation_epoch]:.6f}')
     return test_curve[best_validation_epoch]
 
 def main():
     global INPUT_DIM, OUTPUT_DIM
 
     train_list, val_list, test_list, train_loader, val_loader, test_loader, train_ds = get_loaders(DATA_ROOT, DATASET_NAME, batch_size=BATCH_SIZE)
-    '''
-    DEBUG_N_TRAIN = 8   # try 4, 8, 16
-    DEBUG_N_VAL   = 2
-    DEBUG_N_TEST  = 2
-    
-    train_list = train_list[:DEBUG_N_TRAIN]
-    val_list   = val_list[:DEBUG_N_VAL]
-    test_list  = test_list[:DEBUG_N_TEST]
-    
-    train_loader = DataLoader(train_list, batch_size=BATCH_SIZE, shuffle=True)
-    val_loader   = DataLoader(val_list, batch_size=BATCH_SIZE)
-    test_loader  = DataLoader(test_list, batch_size=BATCH_SIZE)
-    '''
     INPUT_DIM = int(train_ds.num_node_features)
     first_y = train_ds[0].y
-    OUTPUT_DIM = int(first_y.size(-1) if first_y.dim() > 1 else 2)
+    OUTPUT_DIM = int(first_y.size(-1)) if first_y.dim() >= 1 else 1
 
     print(f'Dataset: {DATASET_NAME}')
     print(f'INPUT_DIM = {INPUT_DIM}, OUTPUT_DIM = {OUTPUT_DIM}')
 
     #Multiseed evaluation and mean\pm sd reporting
-    SEEDS = [0]
+    SEEDS = [0,1,2,3,4]
     results = {
-        'base': [], 'egp': [], 'p-egp': [], 'rand': [], 'p-rand': [], 'cgp': [], 'p-cgp': [], 'ep-egp':[],'f-egp':[]
+        'base': [], 'egp': [], 'p-egp': [],'ep-egp': [], 'f-egp': [], 'rand': [], 'p-rand': [], 'cgp': [], 'p-cgp': []
     }
     for seed in SEEDS:
         torch.manual_seed(seed)
         np.random.seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
-        '''
-        p_egp_model = PeptidesGNN(transform_name='P-EGP', is_cgp=False).to(DEVICE)
-        print('Experiments for p-egp')
-        test_ap = (run_experiment(p_egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='P-EGP'))
-        results['p-egp'].append(test_ap)
-        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
+
+        base_model = PeptidesGNN(transform_name='base', is_cgp=False).to(DEVICE)
+        print('Experiments for the base graph (no expanders)')
+        test_mae = run_experiment(base_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='base')
+        results['base'].append(test_mae)
+        results_file = os.path.join(RESULTS_DIR, f'peptides_struct_seed{seed}.jsonl')
         with open(results_file, 'a') as f:
             f.write(json.dumps({
-                'dataset': 'peptides-func',
-                'mode': 'p-egp',
+                'dataset': 'peptides-struct',
+                'mode': 'base',
                 'seed': int(seed),
-                'ap': float(test_ap)
-            }) + '\n')
-        
-        ep_egp_model = PeptidesGNN(transform_name='EP-EGP', is_cgp=False).to(DEVICE)
-        print('Experiments for ep-egp')
-        test_ap = (run_experiment(ep_egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='EP-EGP'))
-        results['ep-egp'].append(test_ap)
-        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
-        with open(results_file, 'a') as f:
-            f.write(json.dumps({
-                'dataset': 'peptides-func',
-                'mode': 'ep-egp',
-                'seed': int(seed),
-                'ap': float(test_ap)
-            }) + '\n')
-        '''
-        f_egp_model = PeptidesGNN(transform_name='F-EGP', is_cgp=False).to(DEVICE)
-        print('Experiments for f-egp')
-        test_ap = (run_experiment(f_egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='F-EGP'))
-        results['f-egp'].append(test_ap)
-        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
-        with open(results_file, 'a') as f:
-            f.write(json.dumps({
-                'dataset': 'peptides-func',
-                'mode': 'f-egp',
-                'seed': int(seed),
-                'ap': float(test_ap)
+                'mae': float(test_mae)
             }) + '\n')
 
-        
+        egp_model = PeptidesGNN(transform_name='EGP', is_cgp=False).to(DEVICE)
+        print('Experiments for egp')
+        test_mae = (run_experiment(egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='EGP'))
+        results['egp'].append(test_mae)
+        results_file = os.path.join(RESULTS_DIR, f'peptides_struct_seed{seed}.jsonl')
+        with open(results_file, 'a') as f:
+            f.write(json.dumps({
+                'dataset': 'peptides-struct',
+                'mode': 'egp',
+                'seed': int(seed),
+                'mae': float(test_mae)
+            }) + '\n')
+
+        p_egp_model = PeptidesGNN(transform_name='P-EGP', is_cgp=False).to(DEVICE)
+        print('Experiments for p-egp')
+        test_mae = (run_experiment(p_egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='P-EGP'))
+        results['p-egp'].append(test_mae)
+        results_file = os.path.join(RESULTS_DIR, f'peptides_struct_seed{seed}.jsonl')
+        with open(results_file, 'a') as f:
+            f.write(json.dumps({
+                'dataset': 'peptides-struct',
+                'mode': 'p-egp',
+                'seed': int(seed),
+                'mae': float(test_mae)
+            }) + '\n')
+
+        ep_egp_model = PeptidesGNN(transform_name='EP-EGP', is_cgp=False).to(DEVICE)
+        print('Experiments for ep-egp')
+        test_mae = run_experiment(ep_egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='EP-EGP')
+        results['ep-egp'].append(test_mae)
+        results_file = os.path.join(RESULTS_DIR, f'peptides_struct_seed{seed}.jsonl')
+        with open(results_file, 'a') as f:
+            f.write(json.dumps({
+                'dataset': 'peptides-struct',
+                'mode': 'ep-egp',
+                'seed': int(seed),
+                'mae': float(test_mae)
+            }) + '\n')
+
+        f_egp_model = PeptidesGNN(transform_name='F-EGP', is_cgp=False).to(DEVICE)
+        print('Experiments for f-egp')
+        test_mae = run_experiment(f_egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='F-EGP')
+        results['f-egp'].append(test_mae)
+        results_file = os.path.join(RESULTS_DIR, f'peptides_struct_seed{seed}.jsonl')
+        with open(results_file, 'a') as f:
+            f.write(json.dumps({
+                'dataset': 'peptides-struct',
+                'mode': 'f-egp',
+                'seed': int(seed),
+                'mae': float(test_mae)
+            }) + '\n')
+
+        cgp_model = PeptidesGNN(transform_name='CGP', is_cgp=True).to(DEVICE)
+        print('Experiments for cgp')
+        test_mae = (run_experiment(cgp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='CGP'))
+        results['cgp'].append(test_mae)
+        results_file = os.path.join(RESULTS_DIR, f'peptides_struct_seed{seed}.jsonl')
+        with open(results_file, 'a') as f:
+            f.write(json.dumps({
+                'dataset': 'peptides-struct',
+                'mode': 'cgp',
+                'seed': int(seed),
+                'mae': float(test_mae)
+            }) + '\n')
+
+
     print(f'''\nHyper parameters for this test\n#Training parameters\nNUM_EPOCHS = {NUM_EPOCHS}\nLR = {LR}\nBATCH_SIZE = {BATCH_SIZE}\nSEEDS = {SEEDS}\n\n#Scheduler: ReduceLRonPlateau\nREDUCE_FACTOR:{REDUCE_FACTOR}\nPATIENCE={PATIENCE}\nMIN_LR={MIN_LR} \n
           #Early stopping
           ES_PATIENCE={ES_PATIENCE}
           ES_MIN_DELTA = {ES_MIN_DELTA}
           \n# GNN\nNUM_LAYERS = {NUM_LAYERS}\nHIDDEN_DIM={HIDDEN_DIM}\nDROPOUT = {DROPOUT}\nDEGREE_D = {DEGREE_D}''')
 
-    print('Final Test AP (mean ± sd over seeds):')
-    for key in ['f-egp']:
+    print('Final Test MAE (mean ± sd over seeds):')
+    for key in ['base','egp','p-egp','ep-egp','f-egp','cgp']:
         arr = np.array(results[key], dtype = float)
-        print(f'{key}: {arr.mean():.4f} ± {arr.std(ddof=1):.4f}')
+        print(f'{key}: {arr.mean():.6f} ± {arr.std(ddof=1):.6f}')
 
 if __name__ == '__main__':
     main()

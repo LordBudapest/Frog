@@ -1,3 +1,6 @@
+numpy
 scikit-learn 
+torch
 torch-geometric
 tqdm
+matplotlib

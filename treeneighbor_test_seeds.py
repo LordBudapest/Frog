@@ -395,21 +395,38 @@ class TreeGNNNode(nn.Module):
 
         base_edge_index = batched_data.edge_index
         for layer in range(self.num_layer):
-            base_modes = ['egp','cgp', 'p-egp','ep-egp', 'f-egp','p-cgp','rand','p-rand']
-            use_alt = (self.mode in base_modes and (layer % 2 == 1))
-            if use_alt:
+            is_expander_layer = (layer % 2 == 1)
+            is_last_expander = is_expander_layer and ((self.num_layer - layer) <= 2)
+
+            if self.mode in ['egp', 'cgp'] and is_expander_layer:
+                # plain expander
+                edge_index = self._compute_alt_edge_index(batched_data, layer)
+
+            elif self.mode in ['p-egp', 'ep-egp', 'f-egp'] and is_expander_layer:
                 self.current_layer = layer
-                alt_edge_index = self._compute_alt_edge_index(batched_data, layer_idx = layer)
-                h = self.convs[layer](h_list[layer], alt_edge_index)
+                if is_last_expander:
+                    # 🔥 permuted only at last expander
+                    edge_index = self._compute_alt_edge_index(batched_data, layer)
+                else:
+                    # earlier expanders: unpermuted EGP
+                    edge_index = self._batched_cayley_edge_index(
+                        batched_data,
+                        *self._batch_counts_offsets(batched_data.batch),
+                        batched_data.edge_index.device
+                    )
             else:
-                h = self.convs[layer](h_list[layer], base_edge_index)
+                edge_index = base_edge_index
+
+            h = self.convs[layer](h_list[layer], edge_index)
             h = self.batch_norms[layer](h)
 
             if layer == self.num_layer - 1:
                 h = F.dropout(h, self.drop_ratio, training=self.training)
             else:
                 h = F.dropout(F.relu(h), self.drop_ratio, training=self.training)
+
             h_list.append(h)
+
         return h_list[-1]
     
 class TreeGNN(nn.Module):

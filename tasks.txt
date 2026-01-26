@@ -1,0 +1,99 @@
+write the paper:
+1) write the experiments
+Experimental setup (datasets, baselines, metrics)
+
+Main results table(s)
+
+Ablations / key analysis
+
+Implementation details (even rough)
+
+2) Method
+
+Now that results are clear, describe exactly what produced them.
+
+Focus on:
+
+Model / algorithm definition
+
+Training objective
+
+Any assumptions needed to understand experiments
+
+Skip:
+
+Fancy motivation
+
+Deep theory (just enough to be coherent)
+
+Think: “What must the reader know to reproduce Table 1?”
+
+3) Minimal Theory / Background
+
+Since you’re keeping this light:
+
+Include only:
+
+Definitions
+
+Notation
+
+One or two propositions/lemmas if strictly necessary
+
+Everything else → appendix or gone.
+
+Rule of thumb:
+
+If removing it wouldn’t break the experiments section, it doesn’t belong in the main paper.
+
+4) Introduction
+
+Now you know:
+
+What works
+
+What’s novel
+
+What actually matters
+
+Write:
+
+Problem statement
+
+Why existing methods fall short (based on your results)
+
+Clear bullet-point contributions (derived from experiments)
+
+This goes much faster after steps 1–3.
+
+5) Related Work
+
+Second-to-last on purpose.
+
+Why:
+
+It’s easy but time-consuming
+
+You now know exactly who you need to cite and why
+
+Keep it:
+
+Short
+
+Comparative
+
+Focused on differentiating your method
+
+6) Conclusion (Last)
+
+Always last.
+
+Just:
+
+Restate what you showed experimentally
+
+One limitation
+
+One future direction
+
+If you’re exhausted, this can be ~6–8 sentences.

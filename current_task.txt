@@ -1,0 +1,8 @@
+1) write the experiments
+Experimental setup (datasets, baselines, metrics)
+
+Main results table(s)
+
+Ablations / key analysis
+
+Implementation details (even rough)

@@ -28,6 +28,7 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 
 #HYPERPARAMETERS
 NUM_EPOCHS = 250
+PROBE_EPOCHS = 50
 LR = 0.001
 BATCH_SIZE = 128
 NUM_ITER = 1
@@ -234,15 +235,6 @@ class PeptidesGNNNode(nn.Module):
                 else:
                     cuda_fp = -1
 
-                print(
-                    f"[P-EGP RNG] "
-                    f"epoch={self.current_epoch}, "
-                    f"batch={self.current_batch}, "
-                    f"layer={self.current_layer}, "
-                    f"gid={gid}, "
-                    f"cpu_fp={cpu_fp}, "
-                    f"cuda_fp={cuda_fp}"
-                )
 
             # ---- generate permutation
             if gen is not None:
@@ -434,6 +426,19 @@ def train(model: nn.Module, loader: DataLoader, optimiser: torch.optim.Optimizer
         loss = loss_fn(input = out, target = y)
         loss.backward()
         optimiser.step()
+def train_linear_probe(model, loader, optimiser, loss_fn):
+    model.gnn_node.eval()                 # frozen backbone
+    model.graph_pred_linear.train()       # train head only
+
+    for batch in loader:
+        batch = batch.to(DEVICE)
+        y = batch.y.to(DEVICE).float()
+        out = model(batch)
+        loss = loss_fn(out, y)
+        optimiser.zero_grad()
+        loss.backward()
+        optimiser.step()
+
 
 def _average_precision_binary(scores: torch.Tensor, labels: torch.Tensor) -> float:
     '''
@@ -497,13 +502,20 @@ def run_experiment(
     tname = (transform_name or 'base').upper()
     if tname in ('CGP', 'P-CGP', 'PCGP'):
         transform_obj = PeptidesExpanderTransform(tname)
+    
         train_list = [d.clone() for d in train_list]
         val_list   = [d.clone() for d in val_list]
         test_list  = [d.clone() for d in test_list]
-
+    
         transform_obj.apply_to_dataset(train_list)
         transform_obj.apply_to_dataset(val_list)
         transform_obj.apply_to_dataset(test_list)
+    
+        # REBUILD LOADERS
+        train_loader = DataLoader(train_list, batch_size=BATCH_SIZE, shuffle=True)
+        val_loader   = DataLoader(val_list, batch_size=BATCH_SIZE)
+        test_loader  = DataLoader(test_list, batch_size=BATCH_SIZE)
+
     if hasattr(model, 'gnn_node'):
         # capture experiment-level CUDA seed ONCE
         model.gnn_node.exp_cuda_seed = torch.cuda.initial_seed()
@@ -561,19 +573,6 @@ def main():
     global INPUT_DIM, OUTPUT_DIM
 
     train_list, val_list, test_list, train_loader, val_loader, test_loader, train_ds = get_loaders(DATA_ROOT, DATASET_NAME, batch_size=BATCH_SIZE)
-    '''
-    DEBUG_N_TRAIN = 8   # try 4, 8, 16
-    DEBUG_N_VAL   = 2
-    DEBUG_N_TEST  = 2
-    
-    train_list = train_list[:DEBUG_N_TRAIN]
-    val_list   = val_list[:DEBUG_N_VAL]
-    test_list  = test_list[:DEBUG_N_TEST]
-    
-    train_loader = DataLoader(train_list, batch_size=BATCH_SIZE, shuffle=True)
-    val_loader   = DataLoader(val_list, batch_size=BATCH_SIZE)
-    test_loader  = DataLoader(test_list, batch_size=BATCH_SIZE)
-    '''
     INPUT_DIM = int(train_ds.num_node_features)
     first_y = train_ds[0].y
     OUTPUT_DIM = int(first_y.size(-1) if first_y.dim() > 1 else 2)
@@ -582,7 +581,7 @@ def main():
     print(f'INPUT_DIM = {INPUT_DIM}, OUTPUT_DIM = {OUTPUT_DIM}')
 
     #Multiseed evaluation and mean\pm sd reporting
-    SEEDS = [0]
+    SEEDS = [0,1,2,3,4]
     results = {
         'base': [], 'egp': [], 'p-egp': [], 'rand': [], 'p-rand': [], 'cgp': [], 'p-cgp': [], 'ep-egp':[],'f-egp':[]
     }
@@ -592,20 +591,55 @@ def main():
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
         
-        egp_model = PeptidesGNN(transform_name='EGP', is_cgp=False).to(DEVICE)
+        model = PeptidesGNN(transform_name='EGP', is_cgp=False).to(DEVICE)
         print('Experiments for egp')
-        test_ap = (run_experiment(egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='EGP',log_curves=True, log_prefix=f'peptides_func_seed{seed}'))
-        results['egp'].append(test_ap)
+        test_ap = (run_experiment(model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='EGP',log_curves=True, log_prefix=f'peptides_func_seed{seed}'))
 
-        # ---- disable expander edges ----
-        egp_model.gnn_node.disable_expander = True
+        # -------------------------------
+        # STRONG REPRESENTATION TEST
+        # -------------------------------
 
-        # ---- re-evaluate without expanders ----
-        val_ap_no_exp = eval_ap(egp_model, val_loader)
-        test_ap_no_exp = eval_ap(egp_model, test_loader)
+        # 1. Disable expanders
+        model.gnn_node.disable_expander = True
 
-        print(f"[EGP → no-exp] val AP = {val_ap_no_exp:.4f}")
-        print(f"[EGP → no-exp] test AP = {test_ap_no_exp:.4f}")
+        # 2. Freeze GNN
+        for p in model.gnn_node.parameters():
+            p.requires_grad = False
+
+        # 3. Freeze BatchNorm
+        for m in model.modules():
+            if isinstance(m, nn.BatchNorm1d):
+                m.eval()
+
+        # 4. Disable dropout in backbone
+        model.gnn_node.eval()
+
+        # 5. Reinitialize linear head
+        model.graph_pred_linear.reset_parameters()
+
+        # 6. Train ONLY the linear head
+        probe_optim = torch.optim.Adam(
+            model.graph_pred_linear.parameters(),
+            lr=1e-3
+        )
+        probe_loss = nn.BCEWithLogitsLoss()
+
+        for _ in range(PROBE_EPOCHS):   # 
+            train_linear_probe(
+                model,
+                train_loader,
+                probe_optim,
+                probe_loss
+            )
+
+        # 7. Evaluate probe
+        val_ap_probe = eval_ap(model, val_loader)
+        test_ap_probe = eval_ap(model, test_loader)
+
+        print(f"[EGP → linear probe] val AP = {val_ap_probe:.4f}")
+        print(f"[EGP → linear probe] test AP = {test_ap_probe:.4f}")
+        results['egp'].append(test_ap_probe)
+
 
         results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
         with open(results_file, 'a') as f:
@@ -614,24 +648,58 @@ def main():
                 'mode': 'egp',
                 'seed': int(seed),
                 'ap': float(test_ap),
-                'ap_no_exp': float(test_ap_no_exp)
+                'ap_probe': float(test_ap_probe)
             }) + '\n')
 
         
-        ep_egp_model = PeptidesGNN(transform_name='EP-EGP', is_cgp=False).to(DEVICE)
+        model = PeptidesGNN(transform_name='EP-EGP', is_cgp=False).to(DEVICE)
         print('Experiments for ep-egp')
-        test_ap = (run_experiment(ep_egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='EP-EGP', log_curves=True, log_prefix=f'peptides_func_seed{seed}'))
-        results['ep-egp'].append(test_ap)
+        test_ap = (run_experiment(model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='EP-EGP', log_curves=True, log_prefix=f'peptides_func_seed{seed}'))
 
-        # ---- disable expander edges ----
-        ep_egp_model.gnn_node.disable_expander = True
+        # -------------------------------
+        # STRONG REPRESENTATION TEST
+        # -------------------------------
 
-        # ---- re-evaluate without expanders ----
-        val_ap_no_exp = eval_ap(ep_egp_model, val_loader)
-        test_ap_no_exp = eval_ap(ep_egp_model, test_loader)
-        print(f"[EP-EGP → no-exp] val AP = {val_ap_no_exp:.4f}")
-        print(f"[EP-EGP → no-exp] test AP = {test_ap_no_exp:.4f}")
+        # 1. Disable expanders
+        model.gnn_node.disable_expander = True
 
+        # 2. Freeze GNN
+        for p in model.gnn_node.parameters():
+            p.requires_grad = False
+
+        # 3. Freeze BatchNorm
+        for m in model.modules():
+            if isinstance(m, nn.BatchNorm1d):
+                m.eval()
+
+        # 4. Disable dropout in backbone
+        model.gnn_node.eval()
+
+        # 5. Reinitialize linear head
+        model.graph_pred_linear.reset_parameters()
+
+        # 6. Train ONLY the linear head
+        probe_optim = torch.optim.Adam(
+            model.graph_pred_linear.parameters(),
+            lr=1e-3
+        )
+        probe_loss = nn.BCEWithLogitsLoss()
+
+        for _ in range(PROBE_EPOCHS):   # 
+            train_linear_probe(
+                model,
+                train_loader,
+                probe_optim,
+                probe_loss
+            )
+
+        # 7. Evaluate probe
+        val_ap_probe = eval_ap(model, val_loader)
+        test_ap_probe = eval_ap(model, test_loader)
+
+        print(f"[EP-EGP → linear probe] val AP = {val_ap_probe:.4f}")
+        print(f"[EP-EGP → linear probe] test AP = {test_ap_probe:.4f}")
+        results['ep-egp'].append(test_ap_probe)
         results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
         with open(results_file, 'a') as f:
             f.write(json.dumps({
@@ -639,22 +707,57 @@ def main():
                 'mode': 'ep-egp',
                 'seed': int(seed),
                 'ap': float(test_ap),
-                'ap_no_exp': float(test_ap_no_exp)
+                'ap_probe': float(test_ap_probe)
             }) + '\n')
-        f_egp_model = PeptidesGNN(transform_name='F-EGP', is_cgp=False).to(DEVICE)
+        model = PeptidesGNN(transform_name='F-EGP', is_cgp=False).to(DEVICE)
         print('Experiments for f-egp')
-        test_ap = (run_experiment(f_egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='F-EGP', log_curves=True, log_prefix=f'peptides_func_seed{seed}'))
-        results['f-egp'].append(test_ap)
+        test_ap = (run_experiment(model, train_list, val_list, test_list, train_loader, val_loader, test_loader, transform_name='F-EGP', log_curves=True, log_prefix=f'peptides_func_seed{seed}'))
+        
 
-        # ---- disable expander edges ----
-        f_egp_model.gnn_node.disable_expander = True
+        # -------------------------------
+        # STRONG REPRESENTATION TEST
+        # -------------------------------
 
-        # ---- re-evaluate without expanders ----
-        val_ap_no_exp = eval_ap(f_egp_model, val_loader)
-        test_ap_no_exp = eval_ap(f_egp_model, test_loader)
-        print(f"[F-EGP → no-exp] val AP = {val_ap_no_exp:.4f}")
-        print(f"[F-EGP → no-exp] test AP = {test_ap_no_exp:.4f}")
+        # 1. Disable expanders
+        model.gnn_node.disable_expander = True
 
+        # 2. Freeze GNN
+        for p in model.gnn_node.parameters():
+            p.requires_grad = False
+
+        # 3. Freeze BatchNorm
+        for m in model.modules():
+            if isinstance(m, nn.BatchNorm1d):
+                m.eval()
+
+        # 4. Disable dropout in backbone
+        model.gnn_node.eval()
+
+        # 5. Reinitialize linear head
+        model.graph_pred_linear.reset_parameters()
+
+        # 6. Train ONLY the linear head
+        probe_optim = torch.optim.Adam(
+            model.graph_pred_linear.parameters(),
+            lr=1e-3
+        )
+        probe_loss = nn.BCEWithLogitsLoss()
+
+        for _ in range(PROBE_EPOCHS):   # 
+            train_linear_probe(
+                model,
+                train_loader,
+                probe_optim,
+                probe_loss
+            )
+
+        # 7. Evaluate probe
+        val_ap_probe = eval_ap(model, val_loader)
+        test_ap_probe = eval_ap(model, test_loader)
+
+        print(f"[F-EGP → linear probe] val AP = {val_ap_probe:.4f}")
+        print(f"[F-EGP → linear probe] test AP = {test_ap_probe:.4f}")
+        results['f-egp'].append(test_ap_probe)
         results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
         with open(results_file, 'a') as f:
             f.write(json.dumps({
@@ -662,9 +765,148 @@ def main():
                 'mode': 'f-egp',
                 'seed': int(seed),
                 'ap': float(test_ap),
-                'ap_no_exp': float(test_ap_no_exp)
+                'ap_probe': float(test_ap_probe)
 
             }) + '\n')
+        # =======================
+        # P-EGP
+        # =======================
+        model = PeptidesGNN(transform_name='P-EGP', is_cgp=False).to(DEVICE)
+        print('Experiments for p-egp')
+        
+        test_ap = run_experiment(
+            model,
+            train_list, val_list, test_list,
+            train_loader, val_loader, test_loader,
+            transform_name='P-EGP',
+            log_curves=True,
+            log_prefix=f'peptides_func_seed{seed}'
+        )
+        
+        
+        # -------------------------------
+        # STRONG REPRESENTATION TEST
+        # -------------------------------
+
+        # 1. Disable expanders
+        model.gnn_node.disable_expander = True
+
+        # 2. Freeze GNN
+        for p in model.gnn_node.parameters():
+            p.requires_grad = False
+
+        # 3. Freeze BatchNorm
+        for m in model.modules():
+            if isinstance(m, nn.BatchNorm1d):
+                m.eval()
+
+        # 4. Disable dropout in backbone
+        model.gnn_node.eval()
+
+        # 5. Reinitialize linear head
+        model.graph_pred_linear.reset_parameters()
+
+        # 6. Train ONLY the linear head
+        probe_optim = torch.optim.Adam(
+            model.graph_pred_linear.parameters(),
+            lr=1e-3
+        )
+        probe_loss = nn.BCEWithLogitsLoss()
+
+        for _ in range(PROBE_EPOCHS):   # 
+            train_linear_probe(
+                model,
+                train_loader,
+                probe_optim,
+                probe_loss
+            )
+
+        # 7. Evaluate probe
+        val_ap_probe = eval_ap(model, val_loader)
+        test_ap_probe = eval_ap(model, test_loader)
+
+        print(f"[P-EGP → linear probe] val AP = {val_ap_probe:.4f}")
+        print(f"[P-EGP → linear probe] test AP = {test_ap_probe:.4f}")
+        results['p-egp'].append(test_ap_probe)
+        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
+        with open(results_file, 'a') as f:
+            f.write(json.dumps({
+                'dataset': 'peptides-func',
+                'mode': 'p-egp',
+                'seed': int(seed),
+                'ap': float(test_ap),
+                'ap_probe': float(test_ap_probe)
+            }) + '\n')
+        # =======================
+        # CGP
+        # =======================
+        model = PeptidesGNN(transform_name='CGP', is_cgp=True).to(DEVICE)
+        print('Experiments for cgp')
+        
+        test_ap = run_experiment(
+            model,
+            train_list, val_list, test_list,
+            train_loader, val_loader, test_loader,
+            transform_name='CGP',
+            log_curves=True,
+            log_prefix=f'peptides_func_seed{seed}'
+        )
+        
+        
+        # -------------------------------
+        # STRONG REPRESENTATION TEST
+        # -------------------------------
+
+        # 1. Disable expanders
+        model.gnn_node.disable_expander = True
+
+        # 2. Freeze GNN
+        for p in model.gnn_node.parameters():
+            p.requires_grad = False
+
+        # 3. Freeze BatchNorm
+        for m in model.modules():
+            if isinstance(m, nn.BatchNorm1d):
+                m.eval()
+
+        # 4. Disable dropout in backbone
+        model.gnn_node.eval()
+
+        # 5. Reinitialize linear head
+        model.graph_pred_linear.reset_parameters()
+
+        # 6. Train ONLY the linear head
+        probe_optim = torch.optim.Adam(
+            model.graph_pred_linear.parameters(),
+            lr=1e-3
+        )
+        probe_loss = nn.BCEWithLogitsLoss()
+
+        for _ in range(PROBE_EPOCHS):   # 
+            train_linear_probe(
+                model,
+                train_loader,
+                probe_optim,
+                probe_loss
+            )
+
+        # 7. Evaluate probe
+        val_ap_probe = eval_ap(model, val_loader)
+        test_ap_probe = eval_ap(model, test_loader)
+
+        print(f"[CGP → linear probe] val AP = {val_ap_probe:.4f}")
+        print(f"[CGP → linear probe] test AP = {test_ap_probe:.4f}")
+        results['cgp'].append(test_ap_probe)
+        results_file = os.path.join(RESULTS_DIR, f'peptides_func_seed{seed}.jsonl')
+        with open(results_file, 'a') as f:
+            f.write(json.dumps({
+                'dataset': 'peptides-func',
+                'mode': 'cgp',
+                'seed': int(seed),
+                'ap': float(test_ap),
+                'ap_probe': float(test_ap_probe)
+            }) + '\n')
+
 
         
     print(f'''\nHyper parameters for this test\n#Training parameters\nNUM_EPOCHS = {NUM_EPOCHS}\nLR = {LR}\nBATCH_SIZE = {BATCH_SIZE}\nSEEDS = {SEEDS}\n\n#Scheduler: ReduceLRonPlateau\nREDUCE_FACTOR:{REDUCE_FACTOR}\nPATIENCE={PATIENCE}\nMIN_LR={MIN_LR} \n
@@ -674,9 +916,10 @@ def main():
           \n# GNN\nNUM_LAYERS = {NUM_LAYERS}\nHIDDEN_DIM={HIDDEN_DIM}\nDROPOUT = {DROPOUT}\nDEGREE_D = {DEGREE_D}''')
 
     print('Final Test AP (mean ± sd over seeds):')
-    for key in ['egp','ep-egp','f-egp']:
-        arr = np.array(results[key], dtype = float)
+    for key in ['egp', 'p-egp', 'ep-egp', 'f-egp', 'cgp']:
+        arr = np.array(results[key], dtype=float)
         print(f'{key}: {arr.mean():.4f} ± {arr.std(ddof=1):.4f}')
+
 
 if __name__ == '__main__':
     main()

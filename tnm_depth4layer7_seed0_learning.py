@@ -58,6 +58,7 @@ from helpers import get_cayley_n, cayley_graph_size, get_cayley_graph
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 NUM_EPOCHS = 200
+PROBE_EPOCHS = 50
 LR = 0.001
 BATCH_SIZE = 1024
 NUM_ITER = 1
@@ -483,6 +484,19 @@ def train(model: nn.Module, loader: DataLoader, optimiser: torch.optim.Optimizer
         loss = loss_fn(input=out, target=y)
         loss.backward()
         optimiser.step()
+def train_linear_probe(model, loader, optimiser, loss_fn):
+    model.gnn_node.eval()                 # keep backbone frozen
+    model.graph_pred_linear.train()       # train only the head
+
+    for batch in loader:
+        batch = batch.to(DEVICE)
+        out = model(batch)
+        loss = loss_fn(out, batch.y)
+        optimiser.zero_grad()
+        loss.backward()
+        optimiser.step()
+
+
 
 def eval_acc(model: nn.Module, loader: DataLoader):
     model.eval()
@@ -525,8 +539,13 @@ def run_experiment(
 
     transform_obj = None
     tname = (transform_name or 'base').upper()
+    tname = (transform_name or 'base').upper()
     if tname in ('CGP', 'P-CGP', 'PCGP'):
         transform_obj = TreeExpanderTransform(tname)
+        train_list = [d.clone() for d in train_list]
+        val_list   = [d.clone() for d in val_list]
+        test_list  = [d.clone() for d in test_list]
+
         transform_obj.apply_to_dataset(train_list)
         transform_obj.apply_to_dataset(val_list)
         transform_obj.apply_to_dataset(test_list)
@@ -583,7 +602,7 @@ def run_experiment(
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Tree-NeighborsMatch synthetic benchmark")
-    parser.add_argument('--seeds', type=str, default='0', help='Comma-seprated list of RNG seeds')
+    parser.add_argument('--seeds', type=str, default='0,1,2,3,4', help='Comma-seprated list of RNG seeds')
     parser.add_argument('--depth', type=int, default=DEPTH, help='Tree depth for dataset generation')
     parser.add_argument('--hidden_dim', type=int, default=HIDDEN_DIM, help='Hidden dimension')
     parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of GNN layers')
@@ -640,13 +659,44 @@ def main():
             "lr": LR,
             "weight_decay": WEIGHT_DECAY,
         })
+        # -------------------------------
+        # STRONG REPRESENTATION TEST
+        # -------------------------------
+
+        # 1. Disable expanders
         egp_model.gnn_node.disable_expander = True
 
-        val_acc_no_exp = eval_acc(egp_model, val_loader)
-        test_acc_no_exp = eval_acc(egp_model, test_loader)
+        # 2. Freeze GNN
+        for p in egp_model.gnn_node.parameters():
+            p.requires_grad = False
 
-        print(f"[EGP → no-exp] val acc = {val_acc_no_exp:.4f}")
-        print(f"[EGP → no-exp] test acc = {test_acc_no_exp:.4f}")
+        # 3. Freeze BatchNorm stats
+        for m in egp_model.modules():
+            if isinstance(m, nn.BatchNorm1d):
+                m.eval()
+
+
+        egp_model.gnn_node.eval()                 # disable dropout in frozen GNN
+        egp_model.graph_pred_linear.train()       # ensure probe head is trainable
+        # 4. Reinitialize linear head
+        egp_model.graph_pred_linear.reset_parameters()
+
+        # 5. Train ONLY the linear head
+        probe_optim = torch.optim.Adam(
+            egp_model.graph_pred_linear.parameters(),
+            lr=1e-3
+        )
+
+        for _ in range(PROBE_EPOCHS):
+            train_linear_probe(egp_model, train_loader, probe_optim, criterion)
+
+        # 6. Evaluate probe
+        val_acc_probe = eval_acc(egp_model, val_loader)
+        test_acc_probe = eval_acc(egp_model, test_loader)
+
+        print(f"[EGP → linear probe] val acc = {val_acc_probe:.4f}")
+        print(f"[EGP → linear probe] test acc = {test_acc_probe:.4f}")
+
 
         no_exp_log = {
             "model": "EGP",
@@ -656,8 +706,8 @@ def main():
             "hidden_dim": HIDDEN_DIM,
             "batch_size": BATCH_SIZE,
             "with_expander": False,
-            "val_acc": float(val_acc_no_exp),
-            "test_acc": float(test_acc_no_exp),
+            "val_acc": float(val_acc_probe),
+            "test_acc": float(test_acc_probe),
         }
 
         os.makedirs("logs_no_exp", exist_ok=True)
@@ -749,6 +799,106 @@ def main():
             json.dump(no_exp_log, f, indent=2)
         f_egp_scores.append(f_egp_score/ max(1, NUM_ITER))
 
+        # ===================== P-EGP =====================
+        p_egp_model = TreeGNN(transform_name='P-EGP', is_cgp=False, out_dim=OUTPUT_DIM).to(DEVICE)
+        print('Experiments for p-egp')
+        p_egp_score = 0.0
+        
+        for _ in range(NUM_ITER):
+            p_egp_score += run_experiment(
+                p_egp_model,
+                train_list, val_list, test_list,
+                train_loader, val_loader, test_loader,
+                criterion,
+                transform_name='P-EGP',
+                log_dir="logs",
+                run_name=f"p_egp_depth{DEPTH}_seed{seed}",
+                meta={
+                    "model": "P-EGP",
+                    "seed": seed,
+                    "depth": DEPTH,
+                    "num_layers": NUM_LAYERS,
+                    "hidden_dim": HIDDEN_DIM,
+                    "batch_size": BATCH_SIZE,
+                    "lr": LR,
+                    "weight_decay": WEIGHT_DECAY,
+                }
+            )
+        
+        p_egp_model.gnn_node.disable_expander = True
+        
+        val_acc_no_exp = eval_acc(p_egp_model, val_loader)
+        test_acc_no_exp = eval_acc(p_egp_model, test_loader)
+        
+        print(f"[P-EGP → no-exp] val acc = {val_acc_no_exp:.4f}")
+        print(f"[P-EGP → no-exp] test acc = {test_acc_no_exp:.4f}")
+        
+        os.makedirs("logs_no_exp", exist_ok=True)
+        with open(f"logs_no_exp/p_egp_no_exp_depth{DEPTH}_seed{seed}.json", "w") as f:
+            json.dump({
+                "model": "P-EGP",
+                "seed": seed,
+                "depth": DEPTH,
+                "num_layers": NUM_LAYERS,
+                "hidden_dim": HIDDEN_DIM,
+                "batch_size": BATCH_SIZE,
+                "with_expander": False,
+                "val_acc": float(val_acc_no_exp),
+                "test_acc": float(test_acc_no_exp),
+            }, f, indent=2)
+        
+        p_egp_scores.append(p_egp_score / max(1, NUM_ITER))
+
+        # ===================== CGP =====================
+        cgp_model = TreeGNN(transform_name='CGP', is_cgp=True, out_dim=OUTPUT_DIM).to(DEVICE)
+        print('Experiments for cgp')
+        cgp_score = 0.0
+        
+        for _ in range(NUM_ITER):
+            cgp_score += run_experiment(
+                cgp_model,
+                train_list, val_list, test_list,
+                train_loader, val_loader, test_loader,
+                criterion,
+                transform_name='CGP',
+                log_dir="logs",
+                run_name=f"cgp_depth{DEPTH}_seed{seed}",
+                meta={
+                    "model": "CGP",
+                    "seed": seed,
+                    "depth": DEPTH,
+                    "num_layers": NUM_LAYERS,
+                    "hidden_dim": HIDDEN_DIM,
+                    "batch_size": BATCH_SIZE,
+                    "lr": LR,
+                    "weight_decay": WEIGHT_DECAY,
+                }
+            )
+        
+        cgp_model.gnn_node.disable_expander = True
+        
+        val_acc_no_exp = eval_acc(cgp_model, val_loader)
+        test_acc_no_exp = eval_acc(cgp_model, test_loader)
+        
+        print(f"[CGP → no-exp] val acc = {val_acc_no_exp:.4f}")
+        print(f"[CGP → no-exp] test acc = {test_acc_no_exp:.4f}")
+        
+        os.makedirs("logs_no_exp", exist_ok=True)
+        with open(f"logs_no_exp/cgp_no_exp_depth{DEPTH}_seed{seed}.json", "w") as f:
+            json.dump({
+                "model": "CGP",
+                "seed": seed,
+                "depth": DEPTH,
+                "num_layers": NUM_LAYERS,
+                "hidden_dim": HIDDEN_DIM,
+                "batch_size": BATCH_SIZE,
+                "with_expander": False,
+                "val_acc": float(val_acc_no_exp),
+                "test_acc": float(test_acc_no_exp),
+            }, f, indent=2)
+        
+        cgp_scores.append(cgp_score / max(1, NUM_ITER))
+
 
 
     def mean_std(x):
@@ -758,6 +908,8 @@ def main():
     egp_mean, egp_std = mean_std(egp_scores)
     f_egp_mean, f_egp_std = mean_std(f_egp_scores)
     ep_egp_mean, ep_egp_std = mean_std(ep_egp_scores)
+    p_egp_mean, p_egp_std = mean_std(p_egp_scores)
+    cgp_mean, cgp_std = mean_std(cgp_scores)
 
     print(f'''
     Hyper parameters for this test are:
@@ -785,6 +937,8 @@ def main():
     print(f'egp graph : {egp_mean:.4f} ± {egp_std:.4f}')
     print(f'ep-egp graph : {ep_egp_mean:.4f} ± {ep_egp_std:.4f}')
     print(f'f-egp graph : {f_egp_mean:.4f} ± {f_egp_std:.4f}')
+    print(f'p-egp graph : {p_egp_mean:.4f} ± {p_egp_std:.4f}')
+    print(f'cgp graph : {cgp_mean:.4f} ± {cgp_std:.4f}')
 
 if __name__ == '__main__':
     main()

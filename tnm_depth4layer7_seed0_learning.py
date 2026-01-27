@@ -583,7 +583,7 @@ def run_experiment(
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Tree-NeighborsMatch synthetic benchmark")
-    parser.add_argument('--seeds', type=str, default='0,1,2,3,4', help='Comma-seprated list of RNG seeds')
+    parser.add_argument('--seeds', type=str, default='0', help='Comma-seprated list of RNG seeds')
     parser.add_argument('--depth', type=int, default=DEPTH, help='Tree depth for dataset generation')
     parser.add_argument('--hidden_dim', type=int, default=HIDDEN_DIM, help='Hidden dimension')
     parser.add_argument('--num_layers', type=int, default=NUM_LAYERS, help='Number of GNN layers')

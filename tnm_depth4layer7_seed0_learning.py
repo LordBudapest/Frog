@@ -643,11 +643,11 @@ def main():
         print(f'\nDataset: Tree-NeighborsMatch (depth={DEPTH}, seed={seed})')
         print(f'INPUT_DIM = {INPUT_DIM}, OUTPUT_DIM = {OUTPUT_DIM}( +1 LOGITS)')
 
-        egp_model = TreeGNN(transform_name='EGP', is_cgp=False, out_dim=OUTPUT_DIM).to(DEVICE)
+        model = TreeGNN(transform_name='EGP', is_cgp=False, out_dim=OUTPUT_DIM).to(DEVICE)
         print('Experiments for egp')
         egp_score = 0.0
         for _ in range(NUM_ITER):
-            egp_score += run_experiment(egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, criterion, transform_name='EGP',log_dir="logs",
+            egp_score += run_experiment(model, train_list, val_list, test_list, train_loader, val_loader, test_loader, criterion, transform_name='EGP',log_dir="logs",
         run_name=f"egp_depth{DEPTH}_seed{seed}",
         meta={
             "model": "EGP",
@@ -664,36 +664,35 @@ def main():
         # -------------------------------
 
         # 1. Disable expanders
-        egp_model.gnn_node.disable_expander = True
+        model.gnn_node.disable_expander = True
 
         # 2. Freeze GNN
-        for p in egp_model.gnn_node.parameters():
+        for p in model.gnn_node.parameters():
             p.requires_grad = False
 
         # 3. Freeze BatchNorm stats
-        for m in egp_model.modules():
+        for m in model.modules():
             if isinstance(m, nn.BatchNorm1d):
                 m.eval()
 
 
-        egp_model.gnn_node.eval()                 # disable dropout in frozen GNN
-        egp_model.graph_pred_linear.train()       # ensure probe head is trainable
+        model.gnn_node.eval()                 # disable dropout in frozen GNN
+        model.graph_pred_linear.train()       # ensure probe head is trainable
         # 4. Reinitialize linear head
-        egp_model.graph_pred_linear.reset_parameters()
+        model.graph_pred_linear.reset_parameters()
 
         # 5. Train ONLY the linear head
         probe_optim = torch.optim.Adam(
-            egp_model.graph_pred_linear.parameters(),
+            model.graph_pred_linear.parameters(),
             lr=1e-3
         )
 
         for _ in range(PROBE_EPOCHS):
-            train_linear_probe(egp_model, train_loader, probe_optim, criterion)
+            train_linear_probe(model, train_loader, probe_optim, criterion)
 
         # 6. Evaluate probe
-        val_acc_probe = eval_acc(egp_model, val_loader)
-        test_acc_probe = eval_acc(egp_model, test_loader)
-
+        val_acc_probe = eval_acc(model, val_loader)
+        test_acc_probe = eval_acc(model, test_loader)
         print(f"[EGP → linear probe] val acc = {val_acc_probe:.4f}")
         print(f"[EGP → linear probe] test acc = {test_acc_probe:.4f}")
 
@@ -706,8 +705,8 @@ def main():
             "hidden_dim": HIDDEN_DIM,
             "batch_size": BATCH_SIZE,
             "with_expander": False,
-            "val_acc": float(val_acc_probe),
-            "test_acc": float(test_acc_probe),
+            "val_acc_probe": float(val_acc_probe),
+            "test_acc_probe": float(test_acc_probe),
         }
 
         os.makedirs("logs_no_exp", exist_ok=True)
@@ -717,11 +716,11 @@ def main():
         egp_scores.append(egp_score/ max(1, NUM_ITER))
 
 
-        ep_egp_model = TreeGNN(transform_name='EP-EGP', is_cgp=False, out_dim=OUTPUT_DIM).to(DEVICE)
+        model = TreeGNN(transform_name='EP-EGP', is_cgp=False, out_dim=OUTPUT_DIM).to(DEVICE)
         print('Experiments for ep-egp (only last layer permutation)')
         ep_egp_score = 0.0
         for _ in range(NUM_ITER):
-            ep_egp_score += run_experiment(ep_egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, criterion, transform_name='EP-EGP', log_dir="logs",
+            ep_egp_score += run_experiment(model, train_list, val_list, test_list, train_loader, val_loader, test_loader, criterion, transform_name='EP-EGP', log_dir="logs",
     run_name=f"ep_egp_depth{DEPTH}_seed{seed}",
     meta={
         "model": "EP-EGP",
@@ -733,13 +732,42 @@ def main():
         "lr": LR,
         "weight_decay": WEIGHT_DECAY,
     })
-        ep_egp_model.gnn_node.disable_expander = True
+        # -------------------------------
+        # STRONG REPRESENTATION TEST
+        # -------------------------------
 
-        val_acc_no_exp = eval_acc(ep_egp_model, val_loader)
-        test_acc_no_exp = eval_acc(ep_egp_model, test_loader)
+        # 1. Disable expanders
+        model.gnn_node.disable_expander = True
 
-        print(f"[EP-EGP → no-exp] val acc = {val_acc_no_exp:.4f}")
-        print(f"[EP-EGP → no-exp] test acc = {test_acc_no_exp:.4f}")
+        # 2. Freeze GNN
+        for p in model.gnn_node.parameters():
+            p.requires_grad = False
+
+        # 3. Freeze BatchNorm stats
+        for m in model.modules():
+            if isinstance(m, nn.BatchNorm1d):
+                m.eval()
+
+
+        model.gnn_node.eval()                 # disable dropout in frozen GNN
+        model.graph_pred_linear.train()       # ensure probe head is trainable
+        # 4. Reinitialize linear head
+        model.graph_pred_linear.reset_parameters()
+
+        # 5. Train ONLY the linear head
+        probe_optim = torch.optim.Adam(
+            model.graph_pred_linear.parameters(),
+            lr=1e-3
+        )
+
+        for _ in range(PROBE_EPOCHS):
+            train_linear_probe(model, train_loader, probe_optim, criterion)
+
+        # 6. Evaluate probe
+        val_acc_probe = eval_acc(model, val_loader)
+        test_acc_probe = eval_acc(model, test_loader)
+        print(f"[EP-EGP → linear probe] val acc = {val_acc_probe:.4f}")
+        print(f"[EP-EGP → linear probe] test acc = {test_acc_probe:.4f}")
         no_exp_log = {
             "model": "EP-EGP",
             "seed": seed,
@@ -748,8 +776,8 @@ def main():
             "hidden_dim": HIDDEN_DIM,
             "batch_size": BATCH_SIZE,
             "with_expander": False,
-            "val_acc": float(val_acc_no_exp),
-            "test_acc": float(test_acc_no_exp),
+            "val_acc_probe": float(val_acc_probe),
+            "test_acc_probe": float(test_acc_probe),
         }
 
         os.makedirs("logs_no_exp", exist_ok=True)
@@ -758,11 +786,11 @@ def main():
 
         ep_egp_scores.append(ep_egp_score/ max(1, NUM_ITER))
 
-        f_egp_model = TreeGNN(transform_name='F-EGP', is_cgp=False, out_dim=OUTPUT_DIM).to(DEVICE)
+        model = TreeGNN(transform_name='F-EGP', is_cgp=False, out_dim=OUTPUT_DIM).to(DEVICE)
         print('Experiments for f-egp (fixed per-layer permutations)')
         f_egp_score = 0.0
         for _ in range(NUM_ITER):
-            f_egp_score += run_experiment(f_egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, criterion, transform_name='F-EGP', log_dir="logs",
+            f_egp_score += run_experiment(model, train_list, val_list, test_list, train_loader, val_loader, test_loader, criterion, transform_name='F-EGP', log_dir="logs",
     run_name=f"f_egp_depth{DEPTH}_seed{seed}",
     meta={
         "model": "F-EGP",
@@ -774,13 +802,42 @@ def main():
         "lr": LR,
         "weight_decay": WEIGHT_DECAY,
     })
-        f_egp_model.gnn_node.disable_expander = True
+        # -------------------------------
+        # STRONG REPRESENTATION TEST
+        # -------------------------------
 
-        val_acc_no_exp = eval_acc(f_egp_model, val_loader)
-        test_acc_no_exp = eval_acc(f_egp_model, test_loader)
+        # 1. Disable expanders
+        model.gnn_node.disable_expander = True
 
-        print(f"[F-EGP → no-exp] val acc = {val_acc_no_exp:.4f}")
-        print(f"[F-EGP → no-exp] test acc = {test_acc_no_exp:.4f}")
+        # 2. Freeze GNN
+        for p in model.gnn_node.parameters():
+            p.requires_grad = False
+
+        # 3. Freeze BatchNorm stats
+        for m in model.modules():
+            if isinstance(m, nn.BatchNorm1d):
+                m.eval()
+
+
+        model.gnn_node.eval()                 # disable dropout in frozen GNN
+        model.graph_pred_linear.train()       # ensure probe head is trainable
+        # 4. Reinitialize linear head
+        model.graph_pred_linear.reset_parameters()
+
+        # 5. Train ONLY the linear head
+        probe_optim = torch.optim.Adam(
+            model.graph_pred_linear.parameters(),
+            lr=1e-3
+        )
+
+        for _ in range(PROBE_EPOCHS):
+            train_linear_probe(model, train_loader, probe_optim, criterion)
+
+        # 6. Evaluate probe
+        val_acc_probe = eval_acc(model, val_loader)
+        test_acc_probe = eval_acc(model, test_loader)
+        print(f"[F-EGP → linear probe] val acc = {val_acc_probe:.4f}")
+        print(f"[F-EGP → linear probe] test acc = {test_acc_probe:.4f}")
 
         no_exp_log = {
             "model": "F-EGP",
@@ -790,8 +847,8 @@ def main():
             "hidden_dim": HIDDEN_DIM,
             "batch_size": BATCH_SIZE,
             "with_expander": False,
-            "val_acc": float(val_acc_no_exp),
-            "test_acc": float(test_acc_no_exp),
+            "val_acc_probe": float(val_acc_probe),
+            "test_acc_probe": float(test_acc_probe),
         }
 
         os.makedirs("logs_no_exp", exist_ok=True)
@@ -800,13 +857,13 @@ def main():
         f_egp_scores.append(f_egp_score/ max(1, NUM_ITER))
 
         # ===================== P-EGP =====================
-        p_egp_model = TreeGNN(transform_name='P-EGP', is_cgp=False, out_dim=OUTPUT_DIM).to(DEVICE)
+        model = TreeGNN(transform_name='P-EGP', is_cgp=False, out_dim=OUTPUT_DIM).to(DEVICE)
         print('Experiments for p-egp')
         p_egp_score = 0.0
         
         for _ in range(NUM_ITER):
             p_egp_score += run_experiment(
-                p_egp_model,
+                model,
                 train_list, val_list, test_list,
                 train_loader, val_loader, test_loader,
                 criterion,
@@ -825,14 +882,43 @@ def main():
                 }
             )
         
-        p_egp_model.gnn_node.disable_expander = True
-        
-        val_acc_no_exp = eval_acc(p_egp_model, val_loader)
-        test_acc_no_exp = eval_acc(p_egp_model, test_loader)
-        
-        print(f"[P-EGP → no-exp] val acc = {val_acc_no_exp:.4f}")
-        print(f"[P-EGP → no-exp] test acc = {test_acc_no_exp:.4f}")
-        
+        # -------------------------------
+        # STRONG REPRESENTATION TEST
+        # -------------------------------
+
+        # 1. Disable expanders
+        model.gnn_node.disable_expander = True
+
+        # 2. Freeze GNN
+        for p in model.gnn_node.parameters():
+            p.requires_grad = False
+
+        # 3. Freeze BatchNorm stats
+        for m in model.modules():
+            if isinstance(m, nn.BatchNorm1d):
+                m.eval()
+
+
+        model.gnn_node.eval()                 # disable dropout in frozen GNN
+        model.graph_pred_linear.train()       # ensure probe head is trainable
+        # 4. Reinitialize linear head
+        model.graph_pred_linear.reset_parameters()
+
+        # 5. Train ONLY the linear head
+        probe_optim = torch.optim.Adam(
+            model.graph_pred_linear.parameters(),
+            lr=1e-3
+        )
+
+        for _ in range(PROBE_EPOCHS):
+            train_linear_probe(model, train_loader, probe_optim, criterion)
+
+        # 6. Evaluate probe
+        val_acc_probe = eval_acc(model, val_loader)
+        test_acc_probe = eval_acc(model, test_loader)
+        print(f"[P-EGP → linear probe] val acc = {val_acc_probe:.4f}")
+        print(f"[P-EGP → linear probe] test acc = {test_acc_probe:.4f}")
+
         os.makedirs("logs_no_exp", exist_ok=True)
         with open(f"logs_no_exp/p_egp_no_exp_depth{DEPTH}_seed{seed}.json", "w") as f:
             json.dump({
@@ -843,20 +929,20 @@ def main():
                 "hidden_dim": HIDDEN_DIM,
                 "batch_size": BATCH_SIZE,
                 "with_expander": False,
-                "val_acc": float(val_acc_no_exp),
-                "test_acc": float(test_acc_no_exp),
+                "val_acc_probe": float(val_acc_probe),
+                "test_acc_probe": float(test_acc_probe),
             }, f, indent=2)
         
         p_egp_scores.append(p_egp_score / max(1, NUM_ITER))
 
         # ===================== CGP =====================
-        cgp_model = TreeGNN(transform_name='CGP', is_cgp=True, out_dim=OUTPUT_DIM).to(DEVICE)
+        model = TreeGNN(transform_name='CGP', is_cgp=True, out_dim=OUTPUT_DIM).to(DEVICE)
         print('Experiments for cgp')
         cgp_score = 0.0
         
         for _ in range(NUM_ITER):
             cgp_score += run_experiment(
-                cgp_model,
+                model,
                 train_list, val_list, test_list,
                 train_loader, val_loader, test_loader,
                 criterion,
@@ -875,13 +961,42 @@ def main():
                 }
             )
         
-        cgp_model.gnn_node.disable_expander = True
-        
-        val_acc_no_exp = eval_acc(cgp_model, val_loader)
-        test_acc_no_exp = eval_acc(cgp_model, test_loader)
-        
-        print(f"[CGP → no-exp] val acc = {val_acc_no_exp:.4f}")
-        print(f"[CGP → no-exp] test acc = {test_acc_no_exp:.4f}")
+        # -------------------------------
+        # STRONG REPRESENTATION TEST
+        # -------------------------------
+
+        # 1. Disable expanders
+        model.gnn_node.disable_expander = True
+
+        # 2. Freeze GNN
+        for p in model.gnn_node.parameters():
+            p.requires_grad = False
+
+        # 3. Freeze BatchNorm stats
+        for m in model.modules():
+            if isinstance(m, nn.BatchNorm1d):
+                m.eval()
+
+
+        model.gnn_node.eval()                 # disable dropout in frozen GNN
+        model.graph_pred_linear.train()       # ensure probe head is trainable
+        # 4. Reinitialize linear head
+        model.graph_pred_linear.reset_parameters()
+
+        # 5. Train ONLY the linear head
+        probe_optim = torch.optim.Adam(
+            model.graph_pred_linear.parameters(),
+            lr=1e-3
+        )
+
+        for _ in range(PROBE_EPOCHS):
+            train_linear_probe(model, train_loader, probe_optim, criterion)
+
+        # 6. Evaluate probe
+        val_acc_probe = eval_acc(model, val_loader)
+        test_acc_probe = eval_acc(model, test_loader)
+        print(f"[EP-EGP → linear probe] val acc = {val_acc_probe:.4f}")
+        print(f"[EP-EGP → linear probe] test acc = {test_acc_probe:.4f}")
         
         os.makedirs("logs_no_exp", exist_ok=True)
         with open(f"logs_no_exp/cgp_no_exp_depth{DEPTH}_seed{seed}.json", "w") as f:
@@ -893,8 +1008,8 @@ def main():
                 "hidden_dim": HIDDEN_DIM,
                 "batch_size": BATCH_SIZE,
                 "with_expander": False,
-                "val_acc": float(val_acc_no_exp),
-                "test_acc": float(test_acc_no_exp),
+                "val_acc_probe": float(val_acc_probe),
+                "test_acc_probe": float(test_acc_probe),
             }, f, indent=2)
         
         cgp_scores.append(cgp_score / max(1, NUM_ITER))

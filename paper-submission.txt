@@ -1,15 +1,17 @@
 Introduction:
 what are expander based methods(short intro)
-what my method is in the high level
+We are only considering vanilla GNNs to isolate the effect of our technique and compare it with expander based techniques like EGP(Expander Graph Propagation) and CGP(Cayley Graph Propagation)
 Contributions:
-1) Three new permutation based methods on EGP that significantly improve generalization with minimal additional cost(i.e the cost of permuting the nodes)
-2) For deeper layers controlled permutations improve performance 
-3) Improved val/test accuracy considerably compared to EGP and CGP
+1) We introduce permutation-regularized variants of expander graph propagation that preserve linear complexity while substantially improving generalization.
+2) We empirically show that controlled permutations are especially effective in oversquashing-stress regimes.
+3) Across LRGB(Peptides) and synthetic benchmarks(TreeNeighborMatch), our methods consistently outperform EGP and CGP under identical hyperparameters and multiple seeds.
 
-Background: EGP was introduced interleaving expander to get better performance at various tasks compared to vanilla GNNs[Insert EGP link]. They apply truncation of cayley expanders as the interleaving layers. As, shown by [Insert CGP], the truncations may not preserve the properties of cayley graph between two nodes[Insert jj Wilson cgp GitHub link]. CGP tries to resolve this by considering the whole cayley graph via inserting virtual nodes to increase the size of the original graph to that of the expander's. Authors of EGP were interested in a method that has the following desired properties: (C1) it
+Background: EGP(Expander Graph propagation) was introduced as interleaving expander edges between layers of a GNN(Graph Neural Network) to get better performance at various tasks compared to only using edges of the input graph in the layers of a GNN[Insert EGP link]. Authors of EGP were interested in a method that has the following desirable properties: (C1) it
 is capable of propagating information globally in the graph; (C2) it is resistant to the oversquashing
 effect and does not introduce bottlenecks; (C3) its time and space complexity remain subquadratic
-(tighter than O(V^2) for sparse graphs); and (C4) it requires no dedicated preprocessing of the input. Our method checks all the boxes and in fact just like EGP, has time and space complexity of O(V). Based on our analysis both CGP and EGP perform comparative to each other. However, EGP clearly performs better in TNM tasks[as shown in experiments] hence will make our comparisons for TNM primarily with EGP.
+(tighter than O(V^2) for sparse graphs); and (C4) it requires no dedicated preprocessing of the input. Our method checks all the boxes and in fact just like EGP, has time and space complexity of O(V). 
+Another related technique is CGP(Cayley Graph Propagation) As, shown by [Insert CGP], the truncations may not preserve the properties of cayley graph between two nodes[CGP][Insert jj Wilson cgp GitHub link]. CGP tries to resolve this by considering the whole cayley graph via inserting virtual nodes to increase the size of the original graph to that of the expander's.
+Based on our analysis both CGP and EGP perform comparative to each other. However, EGP performed better in our TreeNeighborMatch tasks, hence will make our comparisons for TreeNeighborMatch primarily with EGP.
 
 Choice of Cayley graphs:
 Expander graphs. An expander graph is categorised by its unique properties of being both
@@ -51,131 +53,72 @@ Additionally, we introduce early stopping of 50 epochs to prevent overfitting.
 We chose these parameters to fit our computational budget and time constraints; no extensive hyperparameter tuning was done.
 
 Methods: We define 3 variants(P-EGP, EP-EGP, F-EGP) all of them have the same concept of permuting the expander layers and they only differ in how often they do so.
-Below we have given the pseudocode for (P,EP,F)-EGP algorithm for one epoch, n = |V|, G = G(V, E), d = size of hidden dimension
+We borrow notations as used in EGP paper[EGP link] and below we have given the pseudocode for (P,EP,F)-EGP algorithm for one epoch
+Algorithm 1: Permutation-Regularized Expander graph propagation (P,EP,F)-EGP forward pass
+Inputs :Node features X \in R|V|ˆd, Adjacency matrix A \in R|V|ˆ|V|
+Output:Node embeddings H
+// Choose the smallest Cayley graph from our family that has number of nodes equal to, or greater than, |V |
+n  = argmin_{m\in N}|V(Cay(SL(2,\Z_m);S_m))| \ge |V|;
+G^{Cay(n)} = Cay(SL(2,\Z_n);S_n)
 
-Input: H \in R
+A^{Cay(n)}_{uv} is the adjacency matrix of cayley graph constructed above
 
+H^{(0)} = X
 
+for t \in 1,...,T do
+	if t % 2 == 1:
+		H^{(t)} = GNN^{(t)}(H^{(t-1)}, A)					/// GNN layer over input graph
+	else:
+		P = Generate_Permutation()						/// Generate a random permutation
+		H^{(t)} = GNN^{(t)}(H^{(t-1)}, P(A^{Cay(n)}_{1:|V |,1:|V |)P^t}		/// GNN layer over cayley graph
+	endif
+endfor
 
+return H^{(T-1)}
+[Note that in actual implementation we permute the edge adjacency list which can be done in O(E) = O(2V) = O(V) time since cayley graph is 4-regular]
 
 
+Generate_Permutation() function differs for P-EGP, EP-EGP, F-EGP and is as follows:
 
+P-EGP: 
+for every (epoch, batch, layer) we generate a different random permutation
 
+EP-EGP(Epoch P-EGP): 
+for every (epoch, layer) we generate a different random permutation
 
+F-EGP(Fixed P-EGP):
+We generate a permutation for each expander layer and use that fixed permutation of layers for the whole experiment i.e for every (layer) we generate a different random permutation.
 
 
 
+Justification/Motivation:[This is a rough idea part and not fully fleshed out, if I am not able to flesh it out then will skip it]
+(1) CGP and EGP use a fixed expander for each layer, so for noisy real world tasks, a pathological alignment(may or may not specify what exactly it will mean depending on time constraints) could be node getting connected to only faulty nodes or fixed regions only seeing other fixed regions(again need to specify exactly what i mean), but these changes are mitigated if we permute the expander edges for every layer.
+(2) 
 
 
+Related Works:The scope of our techniques is for understanding expander based methods only hence we only focus on CGP and EGP however there are some state-of-the-art techniques which don't rely on expander structures,
+FoSR
+GTR
+DropEdge
+etc
+[Expander based methods [cgp] have shown competitive performance to some of these methods on various datasets[ogb][tudataset][lrgb]]
 
 
+Impact statement: GNNs struggle from oversquashing[alon and yahav] and oversmoothing[the Bronstein paper], our approach is an aim at better understanding those limitations and hopefully train deeper GNNs for better performance while mitigating phenomena like oversquashing and oversmoothing.
 
 
+Appendix:
+A.
+Choice of datasets: Based on [position: graph learning will lose it's significance] we chose the following datasets, made the conditions uniform for all models tested to isolate the effects of our approach.
+[Detailed description of Peptides]
 
+[Detailed description of TreeNeighborMatch]
 
+B.
+Plot for TreeNeighbormatch depth=4,layer=7,seed=0,validation accuracy
+[insert the plot]
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+C. For depth=5 we show the difference in train/val accuracy of egp compared to our models(ep-egp and f-egp).
+EGP overfits very fast but shows significantly lower validation accuracy compared to our model which slowly increasing training accuracy but has much higher validation accuracy.
+[Insert validation accuracy]		[Insert training accuracy]
+For this test, the parameters are identical to depth=4, except hidden dimension is increased from 64 to 128 and number of epochs are increased from 200 to 400

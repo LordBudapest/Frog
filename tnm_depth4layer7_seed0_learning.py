@@ -430,11 +430,11 @@ class TreeGNNNode(nn.Module):
             is_expander_layer = (layer % 2 == 1)
             is_last_expander = is_expander_layer and ((self.num_layer - layer) <= 2)
 
-            if self.mode in ['egp', 'cgp'] and is_expander_layer:
+            if (not self.disable_expander) and self.mode in ['egp', 'cgp'] and is_expander_layer:
                 # plain expander
                 edge_index = self._compute_alt_edge_index(batched_data, layer)
 
-            elif self.mode in ['p-egp', 'ep-egp', 'f-egp'] and is_expander_layer:
+            elif (not self.disable_expander) and self.mode in ['p-egp', 'ep-egp', 'f-egp'] and is_expander_layer:
                 self.current_layer = layer
                 if is_last_expander:
                     # permuted only at last expander
@@ -640,11 +640,35 @@ def main():
             "lr": LR,
             "weight_decay": WEIGHT_DECAY,
         })
+        egp_model.gnn_node.disable_expander = True
+
+        val_acc_no_exp = eval_acc(egp_model, val_loader)
+        test_acc_no_exp = eval_acc(egp_model, test_loader)
+
+        print(f"[EGP → no-exp] val acc = {val_acc_no_exp:.4f}")
+        print(f"[EGP → no-exp] test acc = {test_acc_no_exp:.4f}")
+
+        no_exp_log = {
+            "model": "EGP",
+            "seed": seed,
+            "depth": DEPTH,
+            "num_layers": NUM_LAYERS,
+            "hidden_dim": HIDDEN_DIM,
+            "batch_size": BATCH_SIZE,
+            "with_expander": False,
+            "val_acc": float(val_acc_no_exp),
+            "test_acc": float(test_acc_no_exp),
+        }
+
+        os.makedirs("logs_no_exp", exist_ok=True)
+        with open(f"logs_no_exp/egp_no_exp_depth{DEPTH}_seed{seed}.json", "w") as f:
+            json.dump(no_exp_log, f, indent=2)
+
         egp_scores.append(egp_score/ max(1, NUM_ITER))
 
 
         ep_egp_model = TreeGNN(transform_name='EP-EGP', is_cgp=False, out_dim=OUTPUT_DIM).to(DEVICE)
-        print('Experiments for ep-egp (all expander layers)')
+        print('Experiments for ep-egp (only last layer permutation)')
         ep_egp_score = 0.0
         for _ in range(NUM_ITER):
             ep_egp_score += run_experiment(ep_egp_model, train_list, val_list, test_list, train_loader, val_loader, test_loader, criterion, transform_name='EP-EGP', log_dir="logs",
@@ -659,6 +683,29 @@ def main():
         "lr": LR,
         "weight_decay": WEIGHT_DECAY,
     })
+        ep_egp_model.gnn_node.disable_expander = True
+
+        val_acc_no_exp = eval_acc(ep_egp_model, val_loader)
+        test_acc_no_exp = eval_acc(ep_egp_model, test_loader)
+
+        print(f"[EP-EGP → no-exp] val acc = {val_acc_no_exp:.4f}")
+        print(f"[EP-EGP → no-exp] test acc = {test_acc_no_exp:.4f}")
+        no_exp_log = {
+            "model": "EP-EGP",
+            "seed": seed,
+            "depth": DEPTH,
+            "num_layers": NUM_LAYERS,
+            "hidden_dim": HIDDEN_DIM,
+            "batch_size": BATCH_SIZE,
+            "with_expander": False,
+            "val_acc": float(val_acc_no_exp),
+            "test_acc": float(test_acc_no_exp),
+        }
+
+        os.makedirs("logs_no_exp", exist_ok=True)
+        with open(f"logs_no_exp/ep_egp_no_exp_depth{DEPTH}_seed{seed}.json", "w") as f:
+            json.dump(no_exp_log, f, indent=2)
+
         ep_egp_scores.append(ep_egp_score/ max(1, NUM_ITER))
 
         f_egp_model = TreeGNN(transform_name='F-EGP', is_cgp=False, out_dim=OUTPUT_DIM).to(DEVICE)
@@ -677,6 +724,29 @@ def main():
         "lr": LR,
         "weight_decay": WEIGHT_DECAY,
     })
+        f_egp_model.gnn_node.disable_expander = True
+
+        val_acc_no_exp = eval_acc(f_egp_model, val_loader)
+        test_acc_no_exp = eval_acc(f_egp_model, test_loader)
+
+        print(f"[F-EGP → no-exp] val acc = {val_acc_no_exp:.4f}")
+        print(f"[F-EGP → no-exp] test acc = {test_acc_no_exp:.4f}")
+
+        no_exp_log = {
+            "model": "F-EGP",
+            "seed": seed,
+            "depth": DEPTH,
+            "num_layers": NUM_LAYERS,
+            "hidden_dim": HIDDEN_DIM,
+            "batch_size": BATCH_SIZE,
+            "with_expander": False,
+            "val_acc": float(val_acc_no_exp),
+            "test_acc": float(test_acc_no_exp),
+        }
+
+        os.makedirs("logs_no_exp", exist_ok=True)
+        with open(f"logs_no_exp/f_egp_no_exp_depth{DEPTH}_seed{seed}.json", "w") as f:
+            json.dump(no_exp_log, f, indent=2)
         f_egp_scores.append(f_egp_score/ max(1, NUM_ITER))
 
 

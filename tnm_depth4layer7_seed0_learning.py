@@ -203,6 +203,7 @@ class TreeGNNNode(nn.Module):
         self.exp_cuda_seed = None
         self.fixed_layer_generators = {}
 
+        self.disable_expander = False
 
         self.convs = nn.ModuleList()
         self.batch_norms = nn.ModuleList()
@@ -436,7 +437,7 @@ class TreeGNNNode(nn.Module):
             elif self.mode in ['p-egp', 'ep-egp', 'f-egp'] and is_expander_layer:
                 self.current_layer = layer
                 if is_last_expander:
-                    # 🔥 permuted only at last expander
+                    # permuted only at last expander
                     edge_index = self._compute_alt_edge_index(batched_data, layer)
                 else:
                     # earlier expanders: unpermuted EGP

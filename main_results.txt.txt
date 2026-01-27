@@ -1,0 +1,115 @@
+Peptides-func(parameters as used in cgp paper)
+Hyper parameters for this test
+#Training parameters
+NUM_EPOCHS = 250
+LR = 0.001
+BATCH_SIZE = 128
+SEEDS = [0, 1, 2, 3, 4]
+
+#Scheduler: ReduceLRonPlateau
+REDUCE_FACTOR:0.5
+PATIENCE=20
+MIN_LR=1e-05 
+
+          #Early stopping
+          ES_PATIENCE=50
+          ES_MIN_DELTA = 0.0001
+          
+# GNN
+NUM_LAYERS = 5
+HIDDEN_DIM=64
+DROPOUT = 0.0
+DEGREE_D = 4
+Final Test AP (mean ± sd over seeds):
+base: 0.5572 ± 0.0044
+egp: 0.5023 ± 0.0084
+p-egp: 0.6064 ± 0.0036
+cgp: 0.5016 ± 0.0058
+ep-egp: 0.6118 ± 0.0038
+f-egp: 0.6145 ± 0.0041
+
+Peptides-struct(parameters as used in cgp)
+Hyper parameters for this test
+#Training parameters
+NUM_EPOCHS = 250
+LR = 0.001
+BATCH_SIZE = 128
+SEEDS = [0, 1, 2, 3, 4]
+
+#Scheduler: ReduceLRonPlateau
+REDUCE_FACTOR:0.5
+PATIENCE=20
+MIN_LR=1e-05 
+
+          #Early stopping
+          ES_PATIENCE=50
+          ES_MIN_DELTA = 0.0001
+          
+# GNN
+NUM_LAYERS = 5
+HIDDEN_DIM=64
+DROPOUT = 0.0
+DEGREE_D = 4
+Final Test MAE (mean ± sd over seeds):
+base: 0.360956 ± 0.006056
+egp: 0.306213 ± 0.006831
+p-egp: 0.268061 ± 0.001730
+cgp: 0.306673 ± 0.003088
+ep-egp: 0.266969 ± 0.001509
+f-egp: 0.268025 ± 0.001816
+
+Treeneighbormatch
+seeds = [0,1,2,3,4]
+Hyper parameters for this test are:
+    NUM_EPOCHS = 200
+    LR = 0.001
+    BATCH_SIZE = 1024
+    NUM_ITER = 1
+    WEIGHT_DECAY = 0.0005
+    EARLY_STOP_PATIENCE = 50
+    SCHEDULER_MODE = max
+    SCHEDULER_THRESHOLD_MODE = abs
+    SCHEDULER_FACTOR = 0.5
+    SCHEDULER_PATIENCE = 10
+
+    NUM_LAYERS = 6
+    HIDDEN_DIM = 64
+    DROPOUT = 0.0
+
+    DEPTH = 4
+    TRAIN_FRACTION = 0.8
+    VAL_FRACTION = 0.1
+    
+
+Final aggregated scores:
+egp graph : 0.3575 ± 0.0508
+ep-egp graph : 0.4593 ± 0.0508
+f-egp graph : 0.4421 ± 0.0490
+
+Treeneighbormatch
+seeds = [0,1,2,3,4]
+Hyper parameters for this test are:
+    NUM_EPOCHS = 200
+    LR = 0.001
+    BATCH_SIZE = 1024
+    NUM_ITER = 1
+    WEIGHT_DECAY = 0.0005
+    EARLY_STOP_PATIENCE = 50
+    SCHEDULER_MODE = max
+    SCHEDULER_THRESHOLD_MODE = abs
+    SCHEDULER_FACTOR = 0.5
+    SCHEDULER_PATIENCE = 10
+
+    NUM_LAYERS = 7
+    HIDDEN_DIM = 64
+    DROPOUT = 0.0
+
+    DEPTH = 4
+    TRAIN_FRACTION = 0.8
+    VAL_FRACTION = 0.1
+    
+
+Final aggregated scores:
+egp graph : 0.3136 ± 0.0315
+ep-egp graph : 0.5664 ± 0.1065
+f-egp graph : 0.5210 ± 0.0845

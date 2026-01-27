@@ -1,0 +1,181 @@
+Introduction:
+what are expander based methods(short intro)
+what my method is in the high level
+Contributions:
+1) Three new permutation based methods on EGP that significantly improve generalization with minimal additional cost(i.e the cost of permuting the nodes)
+2) For deeper layers controlled permutations improve performance 
+3) Improved val/test accuracy considerably compared to EGP and CGP
+
+Background: EGP was introduced interleaving expander to get better performance at various tasks compared to vanilla GNNs[Insert EGP link]. They apply truncation of cayley expanders as the interleaving layers. As, shown by [Insert CGP], the truncations may not preserve the properties of cayley graph between two nodes[Insert jj Wilson cgp GitHub link]. CGP tries to resolve this by considering the whole cayley graph via inserting virtual nodes to increase the size of the original graph to that of the expander's. Authors of EGP were interested in a method that has the following desired properties: (C1) it
+is capable of propagating information globally in the graph; (C2) it is resistant to the oversquashing
+effect and does not introduce bottlenecks; (C3) its time and space complexity remain subquadratic
+(tighter than O(V^2) for sparse graphs); and (C4) it requires no dedicated preprocessing of the input. Our method checks all the boxes and in fact just like EGP, has time and space complexity of O(V). Based on our analysis both CGP and EGP perform comparative to each other. However, EGP clearly performs better in TNM tasks[as shown in experiments] hence will make our comparisons for TNM primarily with EGP.
+
+Choice of Cayley graphs:
+Expander graphs. An expander graph is categorised by its unique properties of being both
+sparse and highly connected with the number of edges scaling linearly with the number of nodes
+(|E| = O(|V|)).  A family of expander graphs have been precomputed leveraging the well-known theoretical
+results of special linear groups, SL(2,Zn), for which a family of corresponding Cayley graphs,
+Cay(SL(2,Zn);Sn), can be derived. Here, Sn denotes a particular generating
+set for SL(2,Zn). For appropriate choices of Sn, the corresponding Cayley graphs are guaranteed to
+have expansion properties. Moreover, the constructed graph are 4-regular[Insert regular graphs good paper link],
+(|E| = 2|V|).
+
+[This section seems to increase and there is too much to add which i didn't consider, so i will skip this section and move the main sections instead]
+
+Theorem:[the theorem link] Cayley graphs have size  n^3 \Pi_{p | n} (1 - \frac{1}{p^2})
+EGP finds smallest cayley graph of size at least as much as m. Then it considers the induced subgraph(deletes some nodes) to make it a graph of size exactly m[EGP link]. We follow the same procedure to get expanders edges for P-EGP and its variants.
+
+Experiment Details:
+Throughout, for a fixed dataset the experimental settings(hyperparameters, gpu, seeds etc) were identical for all models tested.
+Peptides: Peptides-struct and Peptides-func are part of the long range graph benchmark [LRGB] which require long range reasoning abilities to get good performance. 
+
+Peptides-func: Our methods gives upto 11%(mean over 5 seeds) gains over EGP/CGP.
+Peptides-struct: Give error reduction upto 4%(mean over 5 seeds) i.e relative error reduction of 13% over EGP/CGP.
+In appendix we will discuss how does it compare to other methods based on [LRGB]
+[Insert table to compare peptides struct and peptides func vs egp, cgp, p-egp, ep-egp, f-egp]
+[Insert graph for peptides-func for illustration purposes for one seed]
+
+TreeNeighborMatch: Introduced by [Alon and Yahav] for stress testing GNNs for oversquashing(for example, a vanilla GNN at even depth=4 struggles to get 0.3 train accuracy). For depth=4, layer=7, our method gives a relative increase of over 80% compared to EGP(0.5667 test accuracy for our method vs 0.3136 for EGP's, mean over 5 seeds)
+[Insert table to compare TreeNeighborMatch vs egp, cgp, p-egp, ep-egp, f-egp]
+
+
+Hyperparameters:
+Peptides: for both peptides struct and func we have an identical setup to [CGP], and we use the default train/val/split as given by [lrgb]. We, test it over five seeds[0-4].
+[List the parameters]
+Additionally, we introduce early stopping of 50 epochs to prevent overfitting.
+
+TreeNeighborMatch: 
+[List the parameters]
+Additionally, we introduce early stopping of 50 epochs to prevent overfitting.
+We chose these parameters to fit our computational budget and time constraints; no extensive hyperparameter tuning was done.
+
+Methods: We define 3 variants(P-EGP, EP-EGP, F-EGP) all of them have the same concept of permuting the expander layers and they only differ in how often they do so.
+Below we have given the pseudocode for (P,EP,F)-EGP algorithm for one epoch, n = |V|, G = G(V, E), d = size of hidden dimension
+
+Input: H \in R
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

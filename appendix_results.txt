@@ -1,0 +1,26 @@
+Treeneighbormatch
+Hyper parameters for this test are:
+    NUM_EPOCHS = 400
+    LR = 0.001
+    BATCH_SIZE = 1024
+    NUM_ITER = 1
+    WEIGHT_DECAY = 0.0005
+    EARLY_STOP_PATIENCE = 50
+    SCHEDULER_MODE = max
+    SCHEDULER_THRESHOLD_MODE = abs
+    SCHEDULER_FACTOR = 0.5
+    SCHEDULER_PATIENCE = 10
+
+    NUM_LAYERS = 7
+    HIDDEN_DIM = 128
+    DROPOUT = 0.0
+
+    DEPTH = 5
+    TRAIN_FRACTION = 0.8
+    VAL_FRACTION = 0.1
+    
+
+Final aggregated scores:
+egp graph : 0.3122 ± 0.0000
+ep-egp graph : 0.4252 ± 0.0000
+f-egp graph : 0.3825 ± 0.0000
